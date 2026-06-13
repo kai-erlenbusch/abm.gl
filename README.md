@@ -95,5 +95,5 @@ The `frontend/src/components/SimulationCanvas.tsx` maintains a `useFrame` loop. 
 - [ ] Refactor `macro_agent.py` to use `litellm.acompletion` to generate a real JSON policy based on aggregate stats.
 - [ ] **Validation**: Verify that agents physically move independently on the canvas and dynamically change trajectory based on the actual LLM output string logged in the terminal.
 
-### Open Questions
-- Should the TSL Compute Shader calculate aggregate data (GPU parallel reduction) in Phase 2, or can we calculate the aggregate data via CPU/JS for just 10,000 agents to save development time before scaling to 1,000,000 agents?
+### Architectural Decisions
+- **GPU Aggregation Deferred**: For Phase 2 (10,000 agents), calculating aggregate data (e.g. average speed) is performed via CPU/JS reduction. Pulling the buffer back to JS is practically instantaneous for 10k agents. Complex WebGPU parallel reduction compute shaders are deferred to Phase 3 (1,000,000 agents).
