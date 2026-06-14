@@ -99,7 +99,7 @@ function MicroEngine() {
     mat.positionNode = positionLocal.add(positionsNode.element(instanceIndex)); 
     mat.colorNode = color("#00ff88");
     setMaterial(mat);
-  }, [speedUniform]);
+  }, [policyTexture]);
 
   useEffect(() => {
     if (material) {
