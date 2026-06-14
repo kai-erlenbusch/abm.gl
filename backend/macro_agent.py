@@ -12,6 +12,7 @@ load_dotenv()
 class GridCell(BaseModel):
     density: int
     average_speed: float
+    infected_count: int
 
 class AggregateStats(BaseModel):
     active_agents: int
@@ -79,26 +80,40 @@ class ShachiEnvironment:
         hot_sector = (0,0)
         if parsed_stats.grid:
             max_density = 0
+            max_infected = 0
             hot_speed = 0.0
+            
             for r, row in enumerate(parsed_stats.grid):
                 for c, cell in enumerate(row):
                     if cell.density > max_density:
                         max_density = cell.density
+                    if cell.infected_count > max_infected:
+                        max_infected = cell.infected_count
                         hot_sector = (r, c)
                         hot_speed = cell.average_speed
             
             heatmap_str = "No agents present."
+            infection_str = "No infections present."
             if max_density > 0:
                 heatmap_rows = []
+                infection_rows = []
                 for row in parsed_stats.grid:
                     heatmap_chars = []
+                    infection_chars = []
                     for cell in row:
                         val = int((cell.density / max_density) * 9)
                         heatmap_chars.append(str(val))
+                        
+                        inf_val = int((cell.infected_count / max_infected) * 9) if max_infected > 0 else 0
+                        infection_chars.append(str(inf_val))
+                        
                     heatmap_rows.append("".join(heatmap_chars))
+                    infection_rows.append("".join(infection_chars))
+                    
                 heatmap_str = "\n".join(heatmap_rows)
+                infection_str = "\n".join(infection_rows)
             
-            spatial_context = f"\n        Spatial Context: The highest concentration of agents ({max_density} agents) is currently localized in Sector {hot_sector} with local speed {hot_speed:.4f}.\n        Density Heatmap (0-9 scale):\n        " + heatmap_str.replace("\n", "\n        ")
+            spatial_context = f"\n        Spatial Context: The highest concentration of INFECTED agents ({max_infected} infected) is currently localized in Sector {hot_sector} with local speed {hot_speed:.4f}.\n        Population Density Heatmap (0-9 scale):\n        " + heatmap_str.replace("\n", "\n        ") + f"\n        Infection Hotspot Heatmap (0-9 scale):\n        " + infection_str.replace("\n", "\n        ")
 
         health_prompt = f"""
         You are the 'Public Health Advisor' for a {parsed_stats.active_agents} agent simulation.
@@ -106,7 +121,8 @@ class ShachiEnvironment:
         - Active Agents: {parsed_stats.active_agents}
         - Global Average Speed: {parsed_stats.average_speed:.4f}{spatial_context}
         
-        Your goal is to MINIMIZE pathogen spread. Identify high-density hotspots and recommend strict quarantine interventions (low speeds like 0.05).
+        Your goal is to MINIMIZE pathogen spread. Identify high-infection hotspots and recommend strict quarantine interventions.
+        To impose a lockdown in Sector (X, Y), set its target_speed to 0.0.
         Provide your proposed global speed, interventions (max 5), and a rationale.
         """
 
@@ -116,7 +132,8 @@ class ShachiEnvironment:
         - Active Agents: {parsed_stats.active_agents}
         - Global Average Speed: {parsed_stats.average_speed:.4f}{spatial_context}
         
-        Your goal is to MAXIMIZE economic throughput. Recommend high-speed highways (e.g. 0.8) to prevent congestion and maintain high average speeds globally.
+        Your goal is to MAXIMIZE economic throughput. Recommend high-speed highways. 
+        To keep the economy flowing in safe sectors, set target_speed to 0.8.
         Provide your proposed global speed, interventions (max 5), and a rationale.
         """
 
@@ -158,6 +175,7 @@ class ShachiEnvironment:
         {econ_proposal.model_dump_json(indent=2) if econ_proposal else "No response"}
         
         You must synthesize these competing priorities. You may choose to favor one, or strike a balance.
+        To impose a lockdown in an infected Sector (X, Y), set its target_speed to 0.0. To keep the economy flowing in safe sectors, set target_speed to 0.8.
         Set a `global_baseline_speed` for the entire 10x10 grid, and a list of `interventions` (at most 5).
         Provide a brief message explaining your final decision.
         """

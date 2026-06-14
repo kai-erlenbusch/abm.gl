@@ -5,7 +5,7 @@ import * as THREE from 'three';
 // @ts-ignore
 import { WebGPURenderer, StorageInstancedBufferAttribute, StorageBufferAttribute, MeshBasicNodeMaterial } from 'three/webgpu';
 // @ts-ignore
-import { uniform, storage, positionLocal, color, instanceIndex, texture } from 'three/tsl';
+import { uniform, storage, positionLocal, color, instanceIndex, texture, select, uint } from 'three/tsl';
 import { useSimulationBridge } from '@/hooks/useSimulationBridge';
 import { useSimulationStore } from '@/store/simulationStore';
 import { flockingBehavior, resetAggregate, spatialResetNode, spatialCountNode, spatialPrefixSum_LocalScanNode, spatialPrefixSum_BlockScanNode, spatialPrefixSum_AddNode, spatialScatterNode, spatialCollisionNode } from './TslPrimitives';
@@ -60,21 +60,28 @@ function MicroEngine() {
     const posAttr = new StorageInstancedBufferAttribute(posArray, 3);
     const velAttr = new StorageInstancedBufferAttribute(velArray, 3);
     
-    const aggArray = new Uint32Array(200); // 10x10 grid * 2 stats (speed, count)
+    const infectionArray = new Uint32Array(AGENT_COUNT);
+    for (let i = 0; i < 100; i++) {
+      infectionArray[Math.floor(Math.random() * AGENT_COUNT)] = 1;
+    }
+    const infectionAttr = new StorageInstancedBufferAttribute(infectionArray, 1);
+    
+    const aggArray = new Uint32Array(300); // 10x10 grid * 3 stats (speed, count, infected)
     const aggAttr = new StorageBufferAttribute(aggArray, 1);
     setAggregateAttribute(aggAttr);
 
     const positionsNode = storage(posAttr, 'vec3', AGENT_COUNT);
     const velocitiesNode = storage(velAttr, 'vec3', AGENT_COUNT);
-    const aggregateNode = storage(aggAttr, 'uint', 200).toAtomic();
+    const infectionNode = storage(infectionAttr, 'uint', AGENT_COUNT);
+    const aggregateNode = storage(aggAttr, 'uint', 300).toAtomic();
     const policyMapTextureNode = texture(policyTexture);
     
     // 2. TSL ComputeNode Implementation
-    const behaviorNode = flockingBehavior(positionsNode, velocitiesNode, policyMapTextureNode, aggregateNode);
+    const behaviorNode = flockingBehavior(positionsNode, velocitiesNode, policyMapTextureNode, aggregateNode, infectionNode);
     setComputeNode(behaviorNode.compute(AGENT_COUNT));
 
     const resetNode = resetAggregate(aggregateNode.toAtomic());
-    setResetComputeNode(resetNode.compute(200)); // 200 threads for 200 cells
+    setResetComputeNode(resetNode.compute(300)); // 300 threads for 300 cells
 
     // 3. Spatial Grid Buffers (Point D & V2 Decoupling)
     // Pad to 10240 (40 chunks of 256) for Blelloch Scan alignment
@@ -116,21 +123,17 @@ function MicroEngine() {
     setPass2cNode(pass2c);
     
     setPass3Node(spatialScatterNode(positionsNode, offsetAtomicNode.toAtomic(), sortedNode).compute(AGENT_COUNT));
-    setPass4Node(spatialCollisionNode(positionsNode, velocitiesNode, countNode, offsetNode, sortedNode).compute(AGENT_COUNT));
+    setPass4Node(spatialCollisionNode(positionsNode, velocitiesNode, countNode, offsetNode, sortedNode, infectionNode).compute(AGENT_COUNT));
 
     // 4. WebGPU Material Binding
     const mat = new MeshBasicNodeMaterial();
     mat.positionNode = positionLocal.add(positionsNode.element(instanceIndex)); 
-    mat.colorNode = color("#00ff88");
+    
+    const isInfected = infectionNode.element(instanceIndex).equal(uint(1));
+    mat.colorNode = select(isInfected, color("#ff0000"), color("#00ff88"));
+    
     setMaterial(mat);
   }, [policyTexture]);
-
-  useEffect(() => {
-    if (material) {
-      material.colorNode = color(isMacroThinking ? "#ff3366" : "#00ff88");
-      material.needsUpdate = true;
-    }
-  }, [material, isMacroThinking]);
 
   useEffect(() => {
     if (currentPolicy?.policy_speed_map) {
@@ -183,7 +186,7 @@ function MicroEngine() {
         const buffer = await (state.gl as any).backend.getArrayBufferAsync(aggregateAttribute);
         const uintArray = new Uint32Array(buffer);
         
-        // Parse 200-element flat array into 10x10 spatial grid
+        // Parse 300-element flat array into 10x10 spatial grid
         const grid = [];
         let totalGlobalSpeed = 0;
         let totalGlobalAgents = 0;
@@ -192,13 +195,15 @@ function MicroEngine() {
           const row = [];
           for (let c = 0; c < 10; c++) {
             const index = r * 10 + c;
-            const totalSpeedScaled = uintArray[index * 2];
-            const count = uintArray[index * 2 + 1];
+            const totalSpeedScaled = uintArray[index * 3];
+            const count = uintArray[index * 3 + 1];
+            const infectedCount = uintArray[index * 3 + 2];
             
             const avgSpeed = count > 0 ? (totalSpeedScaled / 100.0) / count : 0;
             row.push({
               density: count,
-              average_speed: avgSpeed
+              average_speed: avgSpeed,
+              infected_count: infectedCount
             });
             
             totalGlobalSpeed += (totalSpeedScaled / 100.0);

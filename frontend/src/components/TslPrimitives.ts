@@ -4,7 +4,7 @@ import { Fn, instanceIndex, If, length, atomicAdd, atomicStore, atomicLoad, uint
  * 1. Flocking Behavior Primitive
  * Calculates separation, alignment, and cohesion entirely on the GPU.
  */
-export const flockingBehavior = Fn(([positions, velocities, policyMapTexture, aggregateBuffer]) => {
+export const flockingBehavior = Fn(([positions, velocities, policyMapTexture, aggregateBuffer, infectionBuffer]) => {
     const i = instanceIndex;
     const pos = positions.element(i);
     const vel = velocities.element(i);
@@ -39,18 +39,21 @@ export const flockingBehavior = Fn(([positions, velocities, policyMapTexture, ag
     const safeRow = clamp(row, 0, 9);
     
     const gridIndex = safeRow.mul(10).add(safeCol);
-    const speedIndex = gridIndex.mul(2);
-    const countIndex = gridIndex.mul(2).add(1);
+    const speedIndex = gridIndex.mul(3);
+    const countIndex = gridIndex.mul(3).add(1);
+    const infectedIndex = gridIndex.mul(3).add(2);
 
     const speed = length(vel).mul(speedLocal);
+    const myInfection = infectionBuffer.element(i);
     
     // Accumulate speed (scaled by 100) and agent count per cell
     atomicAdd(aggregateBuffer.element(speedIndex), uint(speed.mul(100.0)));
     atomicAdd(aggregateBuffer.element(countIndex), uint(1));
+    atomicAdd(aggregateBuffer.element(infectedIndex), myInfection);
 });
 
 export const resetAggregate = Fn(([aggregateBuffer]) => {
-    // Run this with 200 threads to clear the entire spatial grid buffer
+    // Run this with 300 threads to clear the entire spatial grid buffer
     const i = instanceIndex;
     atomicStore(aggregateBuffer.element(i), uint(0));
 });
@@ -254,11 +257,12 @@ export const spatialScatterNode = Fn(([positions, cellOffsetAtomicBuffer, sorted
     sortedAgentIndicesBuffer.element(slot).assign(i);
 });
 
-export const spatialCollisionNode = Fn(([positions, velocities, cellCountBuffer, cellOffsetBuffer, sortedAgentIndicesBuffer]) => {
+export const spatialCollisionNode = Fn(([positions, velocities, cellCountBuffer, cellOffsetBuffer, sortedAgentIndicesBuffer, infectionBuffer]) => {
     // 1M threads
     const i = instanceIndex;
     const pos = positions.element(i);
     const vel = velocities.element(i);
+    const myInfection = infectionBuffer.element(i);
     
     const normX = pos.x.add(25.0);
     const normY = pos.y.add(25.0);
@@ -298,6 +302,12 @@ export const spatialCollisionNode = Fn(([positions, velocities, cellCountBuffer,
                         const pushStrength = float(0.5).sub(dist); 
                         separation.addAssign(pushDir.mul(pushStrength));
                         neighborsCount.addAssign(uint(1));
+
+                        // Phase 7: Viral Transmission
+                        const otherInfection = infectionBuffer.element(otherAgentId);
+                        If(myInfection.equal(uint(0)).and(otherInfection.equal(uint(1))).and(dist.lessThan(0.2)), () => {
+                            myInfection.assign(uint(1));
+                        });
                     });
                 });
             });
