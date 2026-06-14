@@ -42,20 +42,20 @@ function MicroEngine() {
     const posAttr = new StorageInstancedBufferAttribute(posArray, 3);
     const velAttr = new StorageInstancedBufferAttribute(velArray, 3);
     
-    const aggArray = new Uint32Array(1);
+    const aggArray = new Uint32Array(200); // 10x10 grid * 2 stats (speed, count)
     const aggAttr = new StorageBufferAttribute(aggArray, 1);
     setAggregateAttribute(aggAttr);
 
     const positionsNode = storage(posAttr, 'vec3', AGENT_COUNT);
     const velocitiesNode = storage(velAttr, 'vec3', AGENT_COUNT);
-    const aggregateNode = storage(aggAttr, 'uint', 1).toAtomic();
+    const aggregateNode = storage(aggAttr, 'uint', 200).toAtomic();
     
     // 2. TSL ComputeNode Implementation
     const behaviorNode = flockingBehavior(positionsNode, velocitiesNode, speedUniform, aggregateNode);
     setComputeNode(behaviorNode.compute(AGENT_COUNT));
 
     const resetNode = resetAggregate(aggregateNode.toAtomic());
-    setResetComputeNode(resetNode.compute(1)); // 1 thread execution
+    setResetComputeNode(resetNode.compute(200)); // 200 threads for 200 cells
 
     // 3. WebGPU Material Binding
     const mat = new MeshBasicNodeMaterial();
@@ -99,15 +99,40 @@ function MicroEngine() {
       try {
         const buffer = await (state.gl as any).backend.getArrayBufferAsync(aggregateAttribute);
         const uintArray = new Uint32Array(buffer);
-        const totalSpeedScaled = uintArray[0];
-        const avgSpeed = (totalSpeedScaled / 100.0) / AGENT_COUNT;
+        
+        // Parse 200-element flat array into 10x10 spatial grid
+        const grid = [];
+        let totalGlobalSpeed = 0;
+        let totalGlobalAgents = 0;
+
+        for (let r = 0; r < 10; r++) {
+          const row = [];
+          for (let c = 0; c < 10; c++) {
+            const index = r * 10 + c;
+            const totalSpeedScaled = uintArray[index * 2];
+            const count = uintArray[index * 2 + 1];
+            
+            const avgSpeed = count > 0 ? (totalSpeedScaled / 100.0) / count : 0;
+            row.push({
+              density: count,
+              average_speed: avgSpeed
+            });
+            
+            totalGlobalSpeed += (totalSpeedScaled / 100.0);
+            totalGlobalAgents += count;
+          }
+          grid.push(row);
+        }
+
+        const globalAvgSpeed = totalGlobalAgents > 0 ? totalGlobalSpeed / totalGlobalAgents : 0;
         
         // 1. High-frequency telemetry for ChartGPU dashboard
         window.dispatchEvent(new CustomEvent('abm-telemetry', {
           detail: {
             timestamp: Date.now(),
-            actual_speed: avgSpeed,
-            policy_speed: currentPolicy?.movement_speed || 0.1
+            actual_speed: globalAvgSpeed,
+            policy_speed: currentPolicy?.movement_speed || 0.1,
+            grid: grid
           }
         }));
 
@@ -115,10 +140,11 @@ function MicroEngine() {
         if (time - lastLlmSend > 5) {
           setLastLlmSend(time);
           sendAggregateStats({
-            active_agents: AGENT_COUNT,
-            average_speed: avgSpeed,
+            active_agents: totalGlobalAgents,
+            average_speed: globalAvgSpeed,
             tick: time,
-            system_status: "Awaiting LLM Instructions"
+            system_status: "Awaiting LLM Instructions",
+            grid: grid
           });
         }
       } catch (e) {

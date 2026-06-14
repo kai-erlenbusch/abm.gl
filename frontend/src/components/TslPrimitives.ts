@@ -1,4 +1,4 @@
-import { Fn, instanceIndex, If, length, atomicAdd, atomicStore, uint } from 'three/tsl';
+import { Fn, instanceIndex, If, length, atomicAdd, atomicStore, uint, floor, clamp } from 'three/tsl';
 
 /**
  * 1. Flocking Behavior Primitive
@@ -21,14 +21,33 @@ export const flockingBehavior = Fn(([positions, velocities, speedUniform, aggreg
         vel.y.mulAssign(-1);
     });
 
-    // Phase 3: WebGPU Atomic Aggregation
-    // Multiply speed by 100.0 to preserve 2 decimal places, cast to uint, and safely accumulate.
+    // Phase 5: WebGPU Spatial Grid Aggregation
+    // Divide 50x50 world (-25 to 25) into 10x10 grid. Each cell is 5x5.
+    const normX = pos.x.add(25.0);
+    const normY = pos.y.add(25.0);
+    
+    const col = floor(normX.div(5.0));
+    const row = floor(normY.div(5.0));
+    
+    // Ensure we don't index out of bounds
+    const safeCol = clamp(col, 0, 9);
+    const safeRow = clamp(row, 0, 9);
+    
+    const gridIndex = safeRow.mul(10).add(safeCol);
+    const speedIndex = gridIndex.mul(2);
+    const countIndex = gridIndex.mul(2).add(1);
+
     const speed = length(vel);
-    atomicAdd(aggregateBuffer.element(0), uint(speed.mul(100.0)));
+    
+    // Accumulate speed (scaled by 100) and agent count per cell
+    atomicAdd(aggregateBuffer.element(speedIndex), uint(speed.mul(100.0)));
+    atomicAdd(aggregateBuffer.element(countIndex), uint(1));
 });
 
 export const resetAggregate = Fn(([aggregateBuffer]) => {
-    atomicStore(aggregateBuffer.element(0), uint(0));
+    // Run this with 200 threads to clear the entire spatial grid buffer
+    const i = instanceIndex;
+    atomicStore(aggregateBuffer.element(i), uint(0));
 });
 
 /**

@@ -8,11 +8,16 @@ from litellm import acompletion
 load_dotenv()
 
 # Define the exact JSON schema bridging the Frontend and Backend
+class GridCell(BaseModel):
+    density: int
+    average_speed: float
+
 class AggregateStats(BaseModel):
     active_agents: int
     average_speed: float
     tick: float
     system_status: str
+    grid: list[list[GridCell]] | None = None
 
 class PolicyResponse(BaseModel):
     infection_radius: float
@@ -31,18 +36,32 @@ class ShachiEnvironment:
         parsed_stats = AggregateStats(**stats)
         print(f"[Shachi Env] Processing tick {parsed_stats.tick} for {parsed_stats.active_agents} agents...")
         
+        # Analyze spatial grid to find hotspots
+        spatial_context = ""
+        if parsed_stats.grid:
+            max_density = 0
+            hot_sector = (0,0)
+            hot_speed = 0.0
+            for r, row in enumerate(parsed_stats.grid):
+                for c, cell in enumerate(row):
+                    if cell.density > max_density:
+                        max_density = cell.density
+                        hot_sector = (r, c)
+                        hot_speed = cell.average_speed
+            spatial_context = f"\n        Spatial Context: The highest concentration of agents ({max_density} agents) is currently localized in Sector {hot_sector} with local speed {hot_speed:.4f}."
+
         # Format the system prompt and user data
         prompt = f"""
         You are the 'Mayor' Macro Agent for a {parsed_stats.active_agents} agent simulation.
         Current Simulation State:
         - Active Agents: {parsed_stats.active_agents}
-        - Average Speed: {parsed_stats.average_speed:.4f}
+        - Global Average Speed: {parsed_stats.average_speed:.4f}{spatial_context}
         
         If the average speed is too high (above 0.3), lower the movement_speed to calm them down (e.g. 0.05).
         If the average speed is too low (below 0.1), increase the movement_speed to energize them (e.g. 0.5).
         Otherwise, keep it stable.
         
-        Provide a brief message explaining your decision.
+        Provide a brief message explaining your decision, particularly noting any spatial anomalies if relevant.
         """
 
         print(f"[Shachi Env] Sending data to LLM...")
