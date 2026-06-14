@@ -163,8 +163,8 @@ export const spatialPrefixSum_LocalScanNode = Fn(([cellCountBuffer, cellOffsetBu
     
     // Blelloch Down-Sweep
     If(localId.equal(255), () => {
-        chunkSumsBuffer.element(groupId).assign(sharedData.element(255));
-        sharedData.element(255).assign(uint(0));
+        chunkSumsBuffer.element(groupId).assign(sharedData.element(uint(255)));
+        sharedData.element(uint(255)).assign(uint(0));
     });
     workgroupBarrier();
     

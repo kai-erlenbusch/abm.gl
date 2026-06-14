@@ -175,8 +175,8 @@ function MicroEngine() {
     await (state.gl as any).computeAsync(pass4Node);
     
     // CPU Aggregation (Readback API)
-    const time = state.clock.getElapsedTime();
-    if (time - lastReadbackRef.current > 0.1) {
+    const time = performance.now();
+    if (time - lastReadbackRef.current > 100) {
       lastReadbackRef.current = time;
       
       try {
