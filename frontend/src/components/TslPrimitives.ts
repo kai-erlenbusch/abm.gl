@@ -146,7 +146,7 @@ export const spatialPrefixSum_LocalScanNode = Fn(([cellCountBuffer, cellOffsetBu
     const sharedData = workgroupArray('uint', 256);
     
     // Load from global to shared memory
-    sharedData.element(localId).assign(cellCountBuffer.element(i));
+    sharedData.element(localId).assign(atomicLoad(cellCountBuffer.element(i)));
     workgroupBarrier();
     
     // Blelloch Up-Sweep (Reduce) - 8 steps for 256 elements
