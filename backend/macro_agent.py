@@ -100,5 +100,4 @@ class ShachiEnvironment:
                 message=f"Error: {str(e)}"
             )
 
-# Expose a singleton environment for the FastAPI WebSocket
-env = ShachiEnvironment()
+
