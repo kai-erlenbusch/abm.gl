@@ -39,8 +39,8 @@ export const flockingBehavior = Fn(([positions, velocities, speedUniform, aggreg
 
     const speed = length(vel);
     
-    // Accumulate speed (scaled by 100) and agent count per cell
-    atomicAdd(aggregateBuffer.element(speedIndex), uint(speed.mul(100.0)));
+    // Accumulate speed (scaled by 10) and agent count per cell
+    atomicAdd(aggregateBuffer.element(speedIndex), uint(speed.mul(10.0)));
     atomicAdd(aggregateBuffer.element(countIndex), uint(1));
 });
 
