@@ -3,7 +3,7 @@
 The "Unreal Engine" for complex adaptive systems and Agent-Based Modeling. `abm.gl` is a Hybrid Macro/Micro architecture designed to bypass the traditional Python/JVM bottlenecks by moving massive-scale physics to WebGPU, while retaining Python for cognitive LLM-based agents.
 
 ## Key Features
-- **Micro Engine (Brawn)**: 10,000+ deterministic agents running simultaneously at 60fps via Three.js (TSL) Compute Shaders.
+- **Micro Engine (Brawn)**: 1,000,000+ deterministic agents running simultaneously at 60fps via Three.js (TSL) Compute Shaders.
 - **Macro Engine (Brain)**: Institutional LLM-powered agents (via Shachi) that analyze aggregate data and dispatch global policy.
 - **Lockstep Time**: Scientific reproducibility by pausing the physical GPU simulation during LLM inference.
 
@@ -36,7 +36,7 @@ python -m venv venv
 # On Mac/Linux
 source venv/bin/activate
 
-pip install fastapi uvicorn websockets pydantic litellm
+pip install fastapi uvicorn websockets pydantic litellm python-dotenv
 uvicorn server:app --reload
 ```
 
@@ -53,47 +53,38 @@ Open [http://localhost:3000](http://localhost:3000).
 
 ---
 
-## Architecture (Code Explanation)
-
-### The Hybrid Loop
-`abm.gl` solves the "Temporal Desync" between fast GPU rendering and slow LLM generation via **Lockstep Time**.
-
-```mermaid
-sequenceDiagram
-    participant WebGPU (Frontend)
-    participant Bridge (WebSocket)
-    participant Shachi (Backend LLM)
-    
-    WebGPU->>WebGPU: Render N Ticks (60fps)
-    WebGPU->>WebGPU: Aggregate Data in Compute Shader
-    WebGPU->>Bridge: Send {active_agents, avg_speed}
-    Note over WebGPU: PAUSE RENDERING LOOP
-    Bridge->>Shachi: env.step(stats)
-    Note over Shachi: LLM Inference (2-5s)
-    Shachi->>Bridge: Return Policy {movement_speed}
-    Bridge->>WebGPU: Broadcast POLICY_UPDATE
-    Note over WebGPU: RESUME RENDERING LOOP
-```
-
-**How it works in code:**
-The `frontend/src/components/SimulationCanvas.tsx` maintains a `useFrame` loop. It counts time, and when it's time to trigger the Macro Engine, it sets `isMacroThinking` to `true` and yields execution (halting the physical movement of the `InstancedMesh`). The `backend/server.py` awaits the WebSocket payload, calls `macro_agent.py` to validate the state via Pydantic, executes the LLM reasoning, and pushes a new JSON rule back to the browser.
+## Phase 2: Lockstep Time & LiteLLM Bridge (Complete)
+Phase 2 successfully replaced mock loops with actual WebGPU compute physics and real LLM inference. 
+- **WebGPURenderer Injection** enabled TSL natively in React Three Fiber.
+- **LiteLLM Structured Outputs** enforced the strict Pydantic JSON schema at the LLM level.
+- CPU/JS readback aggregated 10,000 instances instantaneously.
 
 ---
 
-## Phase 2 Development Plan
+## Architecture (Code Explanation)
 
-**Approach**: We have proven the WebSocket bridge and Lockstep Time. To finalize the Proof of Concept, we will replace the static rotational simulation with true independent agent physics via TSL, and replace the mocked LLM sleep with a live `litellm` call.
+### Phase 3: WebGPU Atomic Aggregation (In Planning)
+As we scale the simulation to **1,000,000 agents**, pulling 1 million floats (velocities) from VRAM to system RAM every 5 seconds creates a catastrophic bottleneck. 
 
-### Scope
-- **In**: TSL Compute Shader for independent agent velocity/position, `litellm` integration with OpenAI/Anthropic for the Mayor agent.
-- **Out**: Multi-agent debates, UI dashboards, complex bounding box physics.
+Phase 3 introduces **WebGPU Atomic Aggregation** to execute the statistical reduction natively on the GPU compute pipeline. Instead of passing 1,000,000 numbers to the CPU, we pass exactly **1 integer**.
 
-### Action Items
-- [ ] Refactor `TslPrimitives.ts` to implement a WebGPU ComputeNode that calculates random-walk vectors per instance.
-- [ ] Update `SimulationCanvas.tsx` to bind the TSL ComputeNode to the `InstancedMesh`.
-- [ ] Add `.env` file support to `backend/` for `OPENAI_API_KEY`.
-- [ ] Refactor `macro_agent.py` to use `litellm.acompletion` to generate a real JSON policy based on aggregate stats.
-- [ ] **Validation**: Verify that agents physically move independently on the canvas and dynamically change trajectory based on the actual LLM output string logged in the terminal.
+```mermaid
+sequenceDiagram
+    participant WebGPU Physics
+    participant WebGPU Atomics
+    participant CPU (JS)
+    participant Backend (Python)
+    
+    Note over WebGPU Physics: 1,000,000 Agents Moving
+    WebGPU Atomics->>WebGPU Atomics: Reset Pass (Write 0 to buffer)
+    loop Every Agent (Parallel)
+        WebGPU Physics->>WebGPU Atomics: atomicAdd( speed * 100.0 )
+    end
+    Note over WebGPU Atomics: Buffer now holds 1 Uint32 sum
+    WebGPU Atomics->>CPU (JS): getArrayBufferAsync (Read 1 Uint32)
+    Note over CPU (JS): Divide by 100.0, divide by 1M
+    CPU (JS)->>Backend (Python): WebSocket Payload (Avg Speed)
+```
 
-### Architectural Decisions
-- **GPU Aggregation Deferred**: For Phase 2 (10,000 agents), calculating aggregate data (e.g. average speed) is performed via CPU/JS reduction. Pulling the buffer back to JS is practically instantaneous for 10k agents. Complex WebGPU parallel reduction compute shaders are deferred to Phase 3 (1,000,000 agents).
+**How it works in code:**
+To circumvent WebGPU's lack of support for float atomics, we utilize a fixed-point math workaround. In the `aggregateStats` TSL compute node, we multiply the float speed by `100.0` to preserve 2 decimal places, cast it to a `uint`, and use `atomicAdd()` on a single 1-element `StorageInstancedBufferAttribute`. The multiplier of 100 (instead of 1000) prevents a 32-bit integer overflow (max ~4.29 billion) for high-speed agents, providing safe mathematical headroom. The JS CPU then effortlessly reads back the single `Uint32` to finalize the math.
