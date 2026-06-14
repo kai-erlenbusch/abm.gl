@@ -63,7 +63,7 @@ Phase 2 successfully replaced mock loops with actual WebGPU compute physics and 
 
 ## Architecture (Code Explanation)
 
-### Phase 3: WebGPU Atomic Aggregation (In Planning)
+### Phase 3: WebGPU Atomic Aggregation (Complete)
 As we scale the simulation to **1,000,000 agents**, pulling 1 million floats (velocities) from VRAM to system RAM every 5 seconds creates a catastrophic bottleneck. 
 
 Phase 3 introduces **WebGPU Atomic Aggregation** to execute the statistical reduction natively on the GPU compute pipeline. Instead of passing 1,000,000 numbers to the CPU, we pass exactly **1 integer**.
@@ -88,3 +88,11 @@ sequenceDiagram
 
 **How it works in code:**
 To circumvent WebGPU's lack of support for float atomics, we utilize a fixed-point math workaround. In the `aggregateStats` TSL compute node, we multiply the float speed by `100.0` to preserve 2 decimal places, cast it to a `uint`, and use `atomicAdd()` on a single 1-element `StorageInstancedBufferAttribute`. The multiplier of 100 (instead of 1000) prevents a 32-bit integer overflow (max ~4.29 billion) for high-speed agents, providing safe mathematical headroom. The JS CPU then effortlessly reads back the single `Uint32` to finalize the math.
+
+---
+
+## Phase 4: Next.js Command Center (ChartGPU) (Complete)
+Phase 4 introduced a modern, high-performance UI overlay for real-time telemetry streaming and lockstep control.
+- **Glassmorphism HUD**: A sleek Next.js `DashboardOverlay` built with Tailwind CSS.
+- **ChartGPU Integration**: A native WebGPU charting engine that plots real-time agent speed vs LLM policy speed at 60fps, entirely bypassing React state for maximum performance.
+- **Lockstep Controls**: A Pause/Resume button that halts the WebGPU compute physics simulation independently of the React lifecycle.

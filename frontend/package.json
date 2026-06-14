@@ -15,7 +15,9 @@
     "next": "16.2.9",
     "react": "19.2.4",
     "react-dom": "19.2.4",
-    "three": "^0.184.0"
+    "three": "^0.184.0",
+    "chartgpu": "latest",
+    "chartgpu-react": "latest"
   },
   "devDependencies": {
     "@tailwindcss/postcss": "^4",

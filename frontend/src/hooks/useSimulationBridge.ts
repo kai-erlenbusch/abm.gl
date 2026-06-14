@@ -36,7 +36,7 @@ export function useSimulationBridge(url: string = 'ws://localhost:8000/ws') {
       setIsMacroThinking(true); // Pause the micro simulation
       ws.current.send(JSON.stringify(stats));
     }
-  }, []);
+  }, [currentPolicy]);
 
   return { isConnected, isMacroThinking, currentPolicy, sendAggregateStats };
 }

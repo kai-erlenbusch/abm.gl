@@ -3,23 +3,25 @@ import { useRef, useMemo, useEffect, useState } from 'react';
 import { Canvas, useFrame } from '@react-three/fiber';
 import * as THREE from 'three';
 // @ts-ignore
-import { WebGPURenderer, StorageInstancedBufferAttribute, MeshBasicNodeMaterial } from 'three/webgpu';
+import { WebGPURenderer, StorageInstancedBufferAttribute, StorageBufferAttribute, MeshBasicNodeMaterial } from 'three/webgpu';
 // @ts-ignore
 import { uniform, storage, positionLocal, color, instanceIndex } from 'three/tsl';
 import { useSimulationBridge } from '@/hooks/useSimulationBridge';
-import { flockingBehavior } from './TslPrimitives';
+import { flockingBehavior, resetAggregate } from './TslPrimitives';
+import DashboardOverlay from './DashboardOverlay';
 
 // The massive scale WebGPU is capable of
-const AGENT_COUNT = 10000;
+const AGENT_COUNT = 1000000;
 
 function MicroEngine() {
   const meshRef = useRef<THREE.InstancedMesh>(null);
   const { currentPolicy, isMacroThinking, sendAggregateStats } = useSimulationBridge();
   
   const [computeNode, setComputeNode] = useState<any>(null);
+  const [resetComputeNode, setResetComputeNode] = useState<any>(null);
   const [material, setMaterial] = useState<any>(null);
   const [speedUniform] = useState(() => uniform(0.1));
-  const [velocityAttribute, setVelocityAttribute] = useState<any>(null);
+  const [aggregateAttribute, setAggregateAttribute] = useState<any>(null);
   const lastReadbackRef = useRef(0);
 
   useEffect(() => {
@@ -38,24 +40,33 @@ function MicroEngine() {
 
     const posAttr = new StorageInstancedBufferAttribute(posArray, 3);
     const velAttr = new StorageInstancedBufferAttribute(velArray, 3);
-    setVelocityAttribute(velAttr);
+    
+    const aggArray = new Uint32Array(1);
+    const aggAttr = new StorageBufferAttribute(aggArray, 1);
+    setAggregateAttribute(aggAttr);
 
     const positionsNode = storage(posAttr, 'vec3', AGENT_COUNT);
     const velocitiesNode = storage(velAttr, 'vec3', AGENT_COUNT);
+    const aggregateNode = storage(aggAttr, 'uint', 1).toAtomic();
     
     // 2. TSL ComputeNode Implementation
-    const behaviorNode = flockingBehavior(positionsNode, velocitiesNode, speedUniform);
+    const behaviorNode = flockingBehavior(positionsNode, velocitiesNode, speedUniform, aggregateNode);
     setComputeNode(behaviorNode.compute(AGENT_COUNT));
+
+    const resetNode = resetAggregate(aggregateNode.toAtomic());
+    setResetComputeNode(resetNode.compute(1)); // 1 thread execution
 
     // 3. WebGPU Material Binding
     const mat = new MeshBasicNodeMaterial();
     mat.positionNode = positionLocal.add(positionsNode.element(instanceIndex)); 
+    mat.colorNode = color("#00ff88");
     setMaterial(mat);
   }, [speedUniform]);
 
   useEffect(() => {
     if (material) {
       material.colorNode = color(isMacroThinking ? "#ff3366" : "#00ff88");
+      material.needsUpdate = true;
     }
   }, [material, isMacroThinking]);
 
@@ -66,41 +77,53 @@ function MicroEngine() {
   }, [currentPolicy, speedUniform]);
 
   useFrame(async (state, delta) => {
-    if (!meshRef.current || !computeNode || !velocityAttribute) return;
+    if (!meshRef.current || !computeNode || !resetComputeNode || !aggregateAttribute) return;
     
     // Check if our WebGPU hack has initialized
     if (!(state.gl as any).__initialized) return;
 
     // --- LOCKSTEP TIME SYNCHRONIZATION ---
-    if (isMacroThinking) return;
+    // @ts-ignore
+    if (isMacroThinking || window.abmPaused) return;
 
     // Execute Micro Engine physics via WebGPU Compute Shader natively!
+    await (state.gl as any).computeAsync(resetComputeNode);
     await (state.gl as any).computeAsync(computeNode);
     
-    // CPU Aggregation (Readback API) every 5 seconds
+    // CPU Aggregation (Readback API)
     const time = state.clock.getElapsedTime();
-    if (time - lastReadbackRef.current > 5) {
+    if (time - lastReadbackRef.current > 0.1) {
       lastReadbackRef.current = time;
       
       try {
-        const buffer = await (state.gl as any).backend.getArrayBufferAsync(velocityAttribute);
-        const floatArray = new Float32Array(buffer);
-        let totalSpeed = 0;
-        for (let i = 0; i < AGENT_COUNT; i++) {
-           const vx = floatArray[i*3];
-           const vy = floatArray[i*3+1];
-           totalSpeed += Math.sqrt(vx*vx + vy*vy);
-        }
-        const avgSpeed = totalSpeed / AGENT_COUNT;
+        const buffer = await (state.gl as any).backend.getArrayBufferAsync(aggregateAttribute);
+        const uintArray = new Uint32Array(buffer);
+        const totalSpeedScaled = uintArray[0];
+        const avgSpeed = (totalSpeedScaled / 100.0) / AGENT_COUNT;
         
-        sendAggregateStats({
-          active_agents: AGENT_COUNT,
-          average_speed: avgSpeed,
-          tick: time,
-          system_status: "Awaiting LLM Instructions"
-        });
+        // 1. High-frequency telemetry for ChartGPU dashboard
+        window.dispatchEvent(new CustomEvent('abm-telemetry', {
+          detail: {
+            timestamp: Date.now(),
+            actual_speed: avgSpeed,
+            policy_speed: currentPolicy?.movement_speed || 0.1
+          }
+        }));
+
+        // 2. Low-frequency payload for LLM backend (every 5 seconds)
+        // @ts-ignore
+        if (!window.lastLlmSend || time - window.lastLlmSend > 5) {
+          // @ts-ignore
+          window.lastLlmSend = time;
+          sendAggregateStats({
+            active_agents: AGENT_COUNT,
+            average_speed: avgSpeed,
+            tick: time,
+            system_status: "Awaiting LLM Instructions"
+          });
+        }
       } catch (e) {
-        console.error("Readback failed", e);
+        console.warn("Readback error (usually occurs if canvas unmounts mid-frame)", e);
       }
     }
   });
@@ -109,7 +132,7 @@ function MicroEngine() {
 
   return (
     <instancedMesh ref={meshRef} args={[undefined, material, AGENT_COUNT]}>
-      <circleGeometry args={[0.15, 8]} />
+      <planeGeometry args={[0.05, 0.05]} />
     </instancedMesh>
   );
 }
@@ -117,12 +140,7 @@ function MicroEngine() {
 export default function SimulationCanvas() {
   return (
     <div className="w-full h-screen bg-neutral-950 relative">
-      {/* UI Overlay */}
-      <div className="absolute top-4 left-4 z-10 text-white font-mono text-sm bg-black/50 p-4 rounded-lg border border-neutral-800 pointer-events-none">
-        <h1 className="text-xl font-bold mb-2">abm.gl</h1>
-        <p>Micro Agents (WebGPU): 10,000</p>
-        <p>Macro Engine (Python): Active</p>
-      </div>
+      <DashboardOverlay />
 
       {/* WebGPURenderer Injection with Async Init Hack */}
       <Canvas 

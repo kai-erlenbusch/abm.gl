@@ -1,10 +1,10 @@
-import { Fn, instanceIndex, If } from 'three/tsl';
+import { Fn, instanceIndex, If, length, atomicAdd, atomicStore, uint } from 'three/tsl';
 
 /**
  * 1. Flocking Behavior Primitive
  * Calculates separation, alignment, and cohesion entirely on the GPU.
  */
-export const flockingBehavior = Fn(([positions, velocities, speedUniform]) => {
+export const flockingBehavior = Fn(([positions, velocities, speedUniform, aggregateBuffer]) => {
     const i = instanceIndex;
     const pos = positions.element(i);
     const vel = velocities.element(i);
@@ -20,6 +20,15 @@ export const flockingBehavior = Fn(([positions, velocities, speedUniform]) => {
     If(pos.y.greaterThan(25).or(pos.y.lessThan(-25)), () => {
         vel.y.mulAssign(-1);
     });
+
+    // Phase 3: WebGPU Atomic Aggregation
+    // Multiply speed by 100.0 to preserve 2 decimal places, cast to uint, and safely accumulate.
+    const speed = length(vel);
+    atomicAdd(aggregateBuffer.element(0), uint(speed.mul(100.0)));
+});
+
+export const resetAggregate = Fn(([aggregateBuffer]) => {
+    atomicStore(aggregateBuffer.element(0), uint(0));
 });
 
 /**
