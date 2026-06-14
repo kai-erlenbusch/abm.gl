@@ -1,4 +1,4 @@
-import { Fn, instanceIndex, If, length, atomicAdd, atomicStore, atomicLoad, uint, float, floor, clamp, Loop, vec3, texture, vec2, min } from 'three/tsl';
+import { Fn, instanceIndex, If, length, atomicAdd, atomicStore, atomicLoad, uint, int, float, floor, clamp, Loop, vec3, texture, vec2, min } from 'three/tsl';
 
 /**
  * 1. Flocking Behavior Primitive
@@ -115,26 +115,27 @@ export const spatialCollisionNode = Fn(([positions, velocities, cellCountBuffer,
     const normY = pos.y.add(25.0);
     
     // 100x100 grid, cell size 0.5
-    const col = clamp(floor(normX.div(0.5)), 0, 99);
-    const row = clamp(floor(normY.div(0.5)), 0, 99);
+    const col = uint(clamp(floor(normX.div(0.5)), 0, 99));
+    const row = uint(clamp(floor(normY.div(0.5)), 0, 99));
     
     const separation = vec3(0, 0, 0).toVar();
     const neighborsCount = uint(0).toVar();
     
     for (let rOffset = -1; rOffset <= 1; rOffset++) {
         for (let cOffset = -1; cOffset <= 1; cOffset++) {
-            const neighborCol = clamp(col.add(cOffset), 0, 99);
-            const neighborRow = clamp(row.add(rOffset), 0, 99);
-            const neighborGridIndex = neighborRow.mul(100).add(neighborCol);
+            const neighborCol = uint(clamp(int(col).add(cOffset), 0, 99));
+            const neighborRow = uint(clamp(int(row).add(rOffset), 0, 99));
+            const neighborGridIndex = neighborRow.mul(uint(100)).add(neighborCol);
             
             const startIdx = cellOffsetBuffer.element(neighborGridIndex);
             const count = atomicLoad(cellCountBuffer.element(neighborGridIndex));
             
             // Use a static loop of 64 iterations and break/ignore dynamically
             // This strictly satisfies TSL Loop uint requirements while preventing TDR crashes
-            Loop(64, ({ i: j }) => {
-                If(j.lessThan(count), () => {
-                    const sortedIndex = startIdx.add(j);
+            Loop(uint(64), ({ i: j }) => {
+                const jUint = uint(j);
+                If(jUint.lessThan(count), () => {
+                    const sortedIndex = startIdx.add(jUint);
                     const otherAgentId = sortedAgentIndicesBuffer.element(sortedIndex);
                     
                     If(otherAgentId.notEqual(i), () => {
@@ -147,7 +148,7 @@ export const spatialCollisionNode = Fn(([positions, velocities, cellCountBuffer,
                             const pushDir = pos.sub(otherPos).normalize();
                             const pushStrength = float(0.5).sub(dist); 
                             separation.addAssign(pushDir.mul(pushStrength));
-                            neighborsCount.addAssign(1);
+                            neighborsCount.addAssign(uint(1));
                         });
                     });
                 });
@@ -155,7 +156,7 @@ export const spatialCollisionNode = Fn(([positions, velocities, cellCountBuffer,
         }
     }
     
-    If(neighborsCount.greaterThan(0), () => {
+    If(neighborsCount.greaterThan(uint(0)), () => {
         // Average the separation force
         const avgSeparation = separation.div(float(neighborsCount));
         

@@ -12,7 +12,7 @@ import { flockingBehavior, resetAggregate, spatialResetNode, spatialCountNode, s
 import DashboardOverlay from './DashboardOverlay';
 
 // The massive scale WebGPU is capable of
-const AGENT_COUNT = 1000000;
+const AGENT_COUNT = 10000;
 
 function MicroEngine() {
   const meshRef = useRef<THREE.InstancedMesh>(null);

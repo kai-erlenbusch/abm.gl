@@ -13,7 +13,9 @@ export function useSimulationBridge(url: string = 'ws://localhost:8000/ws') {
   const [isMacroThinking, setIsMacroThinking] = useState(false);
 
   useEffect(() => {
-    ws.current = new WebSocket(url);
+    const token = process.env.NEXT_PUBLIC_SIMULATION_TOKEN || "dev_secret_token";
+    const wsUrl = `${url}?token=${token}`;
+    ws.current = new WebSocket(wsUrl);
 
     ws.current.onopen = () => setIsConnected(true);
     ws.current.onclose = () => setIsConnected(false);

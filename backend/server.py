@@ -1,6 +1,7 @@
 import asyncio
+import os
 import json
-from fastapi import FastAPI, WebSocket, WebSocketDisconnect
+from fastapi import FastAPI, WebSocket, WebSocketDisconnect, Query, status
 from macro_agent import ShachiEnvironment
 
 app = FastAPI(title="abm.gl Macro Engine")
@@ -23,7 +24,12 @@ class ConnectionManager:
 manager = ConnectionManager()
 
 @app.websocket("/ws")
-async def websocket_endpoint(websocket: WebSocket):
+async def websocket_endpoint(websocket: WebSocket, token: str = Query(None)):
+    expected_token = os.getenv("SIMULATION_TOKEN", "dev_secret_token")
+    if token != expected_token:
+        await websocket.close(code=status.WS_1008_POLICY_VIOLATION)
+        return
+
     await manager.connect(websocket)
     try:
         while True:
