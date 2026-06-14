@@ -1,4 +1,4 @@
-import { Fn, instanceIndex, If, length, atomicAdd, atomicStore, atomicLoad, uint, float, floor, clamp, Loop, vec3, texture, vec2 } from 'three/tsl';
+import { Fn, instanceIndex, If, length, atomicAdd, atomicStore, atomicLoad, uint, float, floor, clamp, Loop, vec3, texture, vec2, min } from 'three/tsl';
 
 /**
  * 1. Flocking Behavior Primitive
@@ -81,6 +81,7 @@ export const spatialPrefixSumNode = Fn(([cellCountBuffer, cellOffsetBuffer, cell
     // 1 thread
     const total = uint(0).toVar();
     
+    // TODO: Implement Parallel Blelloch Scan algorithm for O(log n) scaling
     Loop(10000, ({ i }) => {
         cellOffsetBuffer.element(i).assign(total);
         atomicStore(cellOffsetAtomicBuffer.element(i), total);
@@ -116,31 +117,43 @@ export const spatialCollisionNode = Fn(([positions, velocities, cellCountBuffer,
     // 100x100 grid, cell size 0.5
     const col = clamp(floor(normX.div(0.5)), 0, 99);
     const row = clamp(floor(normY.div(0.5)), 0, 99);
-    const gridIndex = row.mul(100).add(col);
-    
-    const startIdx = cellOffsetBuffer.element(gridIndex);
-    const count = atomicLoad(cellCountBuffer.element(gridIndex));
     
     const separation = vec3(0, 0, 0).toVar();
     const neighborsCount = uint(0).toVar();
     
-    Loop(count, ({ i: j }) => {
-        const sortedIndex = startIdx.add(j);
-        const otherAgentId = sortedAgentIndicesBuffer.element(sortedIndex);
-        
-        If(otherAgentId.notEqual(i), () => {
-            const otherPos = positions.element(otherAgentId);
-            const dist = pos.distance(otherPos);
+    for (let rOffset = -1; rOffset <= 1; rOffset++) {
+        for (let cOffset = -1; cOffset <= 1; cOffset++) {
+            const neighborCol = clamp(col.add(cOffset), 0, 99);
+            const neighborRow = clamp(row.add(rOffset), 0, 99);
+            const neighborGridIndex = neighborRow.mul(100).add(neighborCol);
             
-            // Repulsion threshold
-            If(dist.lessThan(0.5).and(dist.greaterThan(0.001)), () => {
-                const pushDir = pos.sub(otherPos).normalize();
-                const pushStrength = float(0.5).sub(dist); 
-                separation.addAssign(pushDir.mul(pushStrength));
-                neighborsCount.addAssign(1);
+            const startIdx = cellOffsetBuffer.element(neighborGridIndex);
+            const count = atomicLoad(cellCountBuffer.element(neighborGridIndex));
+            
+            // Use a static loop of 64 iterations and break/ignore dynamically
+            // This strictly satisfies TSL Loop uint requirements while preventing TDR crashes
+            Loop(64, ({ i: j }) => {
+                If(j.lessThan(count), () => {
+                    const sortedIndex = startIdx.add(j);
+                    const otherAgentId = sortedAgentIndicesBuffer.element(sortedIndex);
+                    
+                    If(otherAgentId.notEqual(i), () => {
+                        const otherPos = positions.element(otherAgentId);
+                        
+                        const dist = pos.distance(otherPos);
+                        
+                        // Repulsion threshold
+                        If(dist.lessThan(0.5).and(dist.greaterThan(0.001)), () => {
+                            const pushDir = pos.sub(otherPos).normalize();
+                            const pushStrength = float(0.5).sub(dist); 
+                            separation.addAssign(pushDir.mul(pushStrength));
+                            neighborsCount.addAssign(1);
+                        });
+                    });
+                });
             });
-        });
-    });
+        }
+    }
     
     If(neighborsCount.greaterThan(0), () => {
         // Average the separation force

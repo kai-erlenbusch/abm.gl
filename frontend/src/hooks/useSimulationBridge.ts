@@ -2,7 +2,7 @@ import { useEffect, useRef, useState, useCallback } from 'react';
 
 export type Policy = {
   infection_radius: number;
-  movement_speed: number;
+  policy_speed_map?: number[][];
   message?: string;
 };
 

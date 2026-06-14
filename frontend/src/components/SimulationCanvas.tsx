@@ -125,12 +125,6 @@ function MicroEngine() {
         }
       }
       policyTexture.needsUpdate = true;
-    } else if (currentPolicy?.movement_speed !== undefined) {
-      const speed = currentPolicy.movement_speed;
-      const data = policyTexture.image.data;
-      for (let i = 0; i < 100; i++) {
-        data[i * 4] = speed;
-      }
       policyTexture.needsUpdate = true;
     }
   }, [currentPolicy, policyTexture]);
@@ -192,12 +186,21 @@ function MicroEngine() {
 
         const globalAvgSpeed = totalGlobalAgents > 0 ? totalGlobalSpeed / totalGlobalAgents : 0;
         
+        let policyScalar = 0.1;
+        if (currentPolicy?.policy_speed_map) {
+          let sum = 0;
+          for(let r=0; r<10; r++) {
+            for(let c=0; c<10; c++) sum += currentPolicy.policy_speed_map[r][c];
+          }
+          policyScalar = sum / 100;
+        }
+
         // 1. High-frequency telemetry for ChartGPU dashboard
         window.dispatchEvent(new CustomEvent('abm-telemetry', {
           detail: {
             timestamp: Date.now(),
             actual_speed: globalAvgSpeed,
-            policy_speed: currentPolicy?.movement_speed || 0.1,
+            policy_speed: policyScalar,
             grid: grid
           }
         }));

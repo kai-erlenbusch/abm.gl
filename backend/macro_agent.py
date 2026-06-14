@@ -19,7 +19,17 @@ class AggregateStats(BaseModel):
     system_status: str
     grid: list[list[GridCell]] | None = None
 
-class PolicyResponse(BaseModel):
+class Intervention(BaseModel):
+    row: int
+    col: int
+    target_speed: float
+
+class LLMPolicyResponse(BaseModel):
+    global_baseline_speed: float
+    interventions: list[Intervention]
+    message: str
+
+class FrontendPolicyPayload(BaseModel):
     infection_radius: float
     policy_speed_map: list[list[float]]
     message: str
@@ -28,7 +38,7 @@ class ShachiEnvironment:
     def __init__(self):
         self.current_state = None
         
-    async def step(self, stats: dict) -> PolicyResponse:
+    async def step(self, stats: dict) -> FrontendPolicyPayload:
         """
         The core Shachi gym loop using actual LLM inference.
         """
@@ -57,8 +67,8 @@ class ShachiEnvironment:
         - Active Agents: {parsed_stats.active_agents}
         - Global Average Speed: {parsed_stats.average_speed:.4f}{spatial_context}
         
-        You must output a 10x10 `policy_speed_map` (list of 10 lists, each containing 10 floats) representing the speed limit for each of the 100 spatial sectors.
-        If a sector is the hotspot, you may want to lower the speed there (e.g. 0.05) to quarantine them, while letting other sectors move faster (e.g. 0.8).
+        You must set a `global_baseline_speed` for the entire 10x10 grid, and optionally provide a list of `interventions` (at most 5) to override specific sectors.
+        If a sector is the hotspot, you may want an intervention to lower the speed there (e.g. 0.05) to quarantine them, while the baseline remains fast (e.g. 0.8).
         Provide a brief message explaining your decision.
         """
 
@@ -75,7 +85,7 @@ class ShachiEnvironment:
                 if parsed_stats.grid:
                     speed_map[hot_sector[0]][hot_sector[1]] = 0.05
                     
-                return PolicyResponse(
+                return FrontendPolicyPayload(
                     infection_radius=10.0,
                     policy_speed_map=speed_map,
                     message="Fallback: OPENAI_API_KEY not set. Applied local quarantine to hotspot."
@@ -86,19 +96,31 @@ class ShachiEnvironment:
             response = await acompletion(
                 model="gpt-4o-mini",
                 messages=[{"role": "user", "content": prompt}],
-                response_format=PolicyResponse,
+                response_format=LLMPolicyResponse,
             )
             
             content = response.choices[0].message.content
             print(f"[Shachi Env] LLM Response JSON: {content}")
             
             # Parse the JSON string back into our Pydantic model
-            return PolicyResponse.model_validate_json(content)
+            llm_policy = LLMPolicyResponse.model_validate_json(content)
+            
+            # Reconstruct the 10x10 map
+            speed_map = [[llm_policy.global_baseline_speed for _ in range(10)] for _ in range(10)]
+            for inv in llm_policy.interventions:
+                if 0 <= inv.row < 10 and 0 <= inv.col < 10:
+                    speed_map[inv.row][inv.col] = inv.target_speed
+                    
+            return FrontendPolicyPayload(
+                infection_radius=10.0,
+                policy_speed_map=speed_map,
+                message=llm_policy.message
+            )
             
         except Exception as e:
             print(f"[Shachi Env] Error during LLM inference: {e}")
             speed_map = [[0.1 for _ in range(10)] for _ in range(10)]
-            return PolicyResponse(
+            return FrontendPolicyPayload(
                 infection_radius=10.0,
                 policy_speed_map=speed_map,
                 message=f"Error: {str(e)}"
