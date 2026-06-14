@@ -5,7 +5,7 @@ import * as THREE from 'three';
 // @ts-ignore
 import { WebGPURenderer, StorageInstancedBufferAttribute, StorageBufferAttribute, MeshBasicNodeMaterial } from 'three/webgpu';
 // @ts-ignore
-import { uniform, storage, positionLocal, color, instanceIndex } from 'three/tsl';
+import { uniform, storage, positionLocal, color, instanceIndex, texture } from 'three/tsl';
 import { useSimulationBridge } from '@/hooks/useSimulationBridge';
 import { useSimulationStore } from '@/store/simulationStore';
 import { flockingBehavior, resetAggregate, spatialResetNode, spatialCountNode, spatialPrefixSumNode, spatialScatterNode, spatialCollisionNode } from './TslPrimitives';
@@ -29,7 +29,13 @@ function MicroEngine() {
   const [pass4Node, setPass4Node] = useState<any>(null);
 
   const [material, setMaterial] = useState<any>(null);
-  const [speedUniform] = useState(() => uniform(0.1));
+  const [policyTexture] = useState(() => {
+    const data = new Float32Array(100 * 4);
+    for (let i = 0; i < 400; i++) data[i] = 0.1;
+    const tex = new THREE.DataTexture(data, 10, 10, THREE.RGBAFormat, THREE.FloatType);
+    tex.needsUpdate = true;
+    return tex;
+  });
   const [aggregateAttribute, setAggregateAttribute] = useState<any>(null);
   const lastReadbackRef = useRef(0);
 
@@ -57,18 +63,19 @@ function MicroEngine() {
     const positionsNode = storage(posAttr, 'vec3', AGENT_COUNT);
     const velocitiesNode = storage(velAttr, 'vec3', AGENT_COUNT);
     const aggregateNode = storage(aggAttr, 'uint', 200).toAtomic();
+    const policyMapTextureNode = texture(policyTexture);
     
     // 2. TSL ComputeNode Implementation
-    const behaviorNode = flockingBehavior(positionsNode, velocitiesNode, speedUniform, aggregateNode);
+    const behaviorNode = flockingBehavior(positionsNode, velocitiesNode, policyMapTextureNode, aggregateNode);
     setComputeNode(behaviorNode.compute(AGENT_COUNT));
 
     const resetNode = resetAggregate(aggregateNode.toAtomic());
     setResetComputeNode(resetNode.compute(200)); // 200 threads for 200 cells
 
-    // 3. Spatial Grid Buffers (Point D)
-    const cellCountArray = new Uint32Array(100);
-    const cellOffsetArray = new Uint32Array(100);
-    const cellOffsetAtomicArray = new Uint32Array(100);
+    // 3. Spatial Grid Buffers (Point D & V2 Decoupling)
+    const cellCountArray = new Uint32Array(10000);
+    const cellOffsetArray = new Uint32Array(10000);
+    const cellOffsetAtomicArray = new Uint32Array(10000);
     const sortedAgentArray = new Uint32Array(AGENT_COUNT);
     
     const countAttr = new StorageBufferAttribute(cellCountArray, 1);
@@ -76,12 +83,12 @@ function MicroEngine() {
     const offsetAtomicAttr = new StorageBufferAttribute(cellOffsetAtomicArray, 1);
     const sortedAttr = new StorageBufferAttribute(sortedAgentArray, 1);
     
-    const countNode = storage(countAttr, 'uint', 100);
-    const offsetNode = storage(offsetAttr, 'uint', 100);
-    const offsetAtomicNode = storage(offsetAtomicAttr, 'uint', 100);
+    const countNode = storage(countAttr, 'uint', 10000);
+    const offsetNode = storage(offsetAttr, 'uint', 10000);
+    const offsetAtomicNode = storage(offsetAtomicAttr, 'uint', 10000);
     const sortedNode = storage(sortedAttr, 'uint', AGENT_COUNT);
 
-    setPass0Node(spatialResetNode(countNode.toAtomic(), offsetAtomicNode.toAtomic()).compute(100));
+    setPass0Node(spatialResetNode(countNode.toAtomic(), offsetAtomicNode.toAtomic()).compute(10000));
     setPass1Node(spatialCountNode(positionsNode, countNode.toAtomic()).compute(AGENT_COUNT));
     setPass2Node(spatialPrefixSumNode(countNode, offsetNode, offsetAtomicNode.toAtomic()).compute(1));
     setPass3Node(spatialScatterNode(positionsNode, offsetAtomicNode.toAtomic(), sortedNode).compute(AGENT_COUNT));
@@ -102,10 +109,28 @@ function MicroEngine() {
   }, [material, isMacroThinking]);
 
   useEffect(() => {
-    if (currentPolicy?.movement_speed !== undefined) {
-      speedUniform.value = currentPolicy.movement_speed;
+    if (currentPolicy?.policy_speed_map) {
+      const map = currentPolicy.policy_speed_map;
+      const data = policyTexture.image.data;
+      for (let r = 0; r < 10; r++) {
+        for (let c = 0; c < 10; c++) {
+          const i = (r * 10 + c) * 4;
+          data[i] = map[r][c]; // R channel
+          data[i+1] = 0;
+          data[i+2] = 0;
+          data[i+3] = 1;
+        }
+      }
+      policyTexture.needsUpdate = true;
+    } else if (currentPolicy?.movement_speed !== undefined) {
+      const speed = currentPolicy.movement_speed;
+      const data = policyTexture.image.data;
+      for (let i = 0; i < 100; i++) {
+        data[i * 4] = speed;
+      }
+      policyTexture.needsUpdate = true;
     }
-  }, [currentPolicy, speedUniform]);
+  }, [currentPolicy, policyTexture]);
 
   useFrame(async (state, delta) => {
     if (!meshRef.current || !computeNode || !resetComputeNode || !aggregateAttribute) return;

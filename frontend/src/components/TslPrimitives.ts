@@ -1,16 +1,21 @@
-import { Fn, instanceIndex, If, length, atomicAdd, atomicStore, uint, float, floor, clamp, Loop, variable, vec3 } from 'three/tsl';
+import { Fn, instanceIndex, If, length, atomicAdd, atomicStore, uint, float, floor, clamp, Loop, variable, vec3, texture, vec2 } from 'three/tsl';
 
 /**
  * 1. Flocking Behavior Primitive
  * Calculates separation, alignment, and cohesion entirely on the GPU.
  */
-export const flockingBehavior = Fn(([positions, velocities, speedUniform, aggregateBuffer]) => {
+export const flockingBehavior = Fn(([positions, velocities, policyMapTexture, aggregateBuffer]) => {
     const i = instanceIndex;
     const pos = positions.element(i);
     const vel = velocities.element(i);
     
-    // Apply basic linear movement based on the velocity vector and speed policy
-    pos.addAssign(vel.mul(speedUniform));
+    // Phase 7: Spatial Heterogeneity via DataTexture
+    const u = clamp(pos.x.add(25.0).div(50.0), 0.0, 1.0);
+    const v = clamp(pos.y.add(25.0).div(50.0), 0.0, 1.0);
+    const speedLocal = texture(policyMapTexture, vec2(u, v)).r;
+
+    // Apply basic linear movement based on the velocity vector and spatial speed policy
+    pos.addAssign(vel.mul(speedLocal));
 
     // Basic bounds checking so they don't fly off screen infinitely
     // The screen is roughly -25 to 25 based on camera fov
@@ -51,7 +56,7 @@ export const resetAggregate = Fn(([aggregateBuffer]) => {
 });
 
 export const spatialResetNode = Fn(([cellCountBuffer, cellOffsetAtomicBuffer]) => {
-    // 100 threads
+    // 10,000 threads (100x100 grid)
     const i = instanceIndex;
     atomicStore(cellCountBuffer.element(i), uint(0));
     atomicStore(cellOffsetAtomicBuffer.element(i), uint(0));
@@ -63,9 +68,11 @@ export const spatialCountNode = Fn(([positions, cellCountBuffer]) => {
     const pos = positions.element(i);
     const normX = pos.x.add(25.0);
     const normY = pos.y.add(25.0);
-    const col = clamp(floor(normX.div(5.0)), 0, 9);
-    const row = clamp(floor(normY.div(5.0)), 0, 9);
-    const gridIndex = row.mul(10).add(col);
+    
+    // 100x100 grid, cell size 0.5
+    const col = clamp(floor(normX.div(0.5)), 0, 99);
+    const row = clamp(floor(normY.div(0.5)), 0, 99);
+    const gridIndex = row.mul(100).add(col);
     
     atomicAdd(cellCountBuffer.element(gridIndex), uint(1));
 });
@@ -74,7 +81,7 @@ export const spatialPrefixSumNode = Fn(([cellCountBuffer, cellOffsetBuffer, cell
     // 1 thread
     const total = variable(uint(0));
     
-    Loop(100, ({ i }) => {
+    Loop(10000, ({ i }) => {
         cellOffsetBuffer.element(i).assign(total);
         atomicStore(cellOffsetAtomicBuffer.element(i), total);
         total.addAssign(cellCountBuffer.element(i));
@@ -87,9 +94,11 @@ export const spatialScatterNode = Fn(([positions, cellOffsetAtomicBuffer, sorted
     const pos = positions.element(i);
     const normX = pos.x.add(25.0);
     const normY = pos.y.add(25.0);
-    const col = clamp(floor(normX.div(5.0)), 0, 9);
-    const row = clamp(floor(normY.div(5.0)), 0, 9);
-    const gridIndex = row.mul(10).add(col);
+    
+    // 100x100 grid, cell size 0.5
+    const col = clamp(floor(normX.div(0.5)), 0, 99);
+    const row = clamp(floor(normY.div(0.5)), 0, 99);
+    const gridIndex = row.mul(100).add(col);
     
     const slot = atomicAdd(cellOffsetAtomicBuffer.element(gridIndex), uint(1));
     sortedAgentIndicesBuffer.element(slot).assign(i);
@@ -103,9 +112,11 @@ export const spatialCollisionNode = Fn(([positions, velocities, cellCountBuffer,
     
     const normX = pos.x.add(25.0);
     const normY = pos.y.add(25.0);
-    const col = clamp(floor(normX.div(5.0)), 0, 9);
-    const row = clamp(floor(normY.div(5.0)), 0, 9);
-    const gridIndex = row.mul(10).add(col);
+    
+    // 100x100 grid, cell size 0.5
+    const col = clamp(floor(normX.div(0.5)), 0, 99);
+    const row = clamp(floor(normY.div(0.5)), 0, 99);
+    const gridIndex = row.mul(100).add(col);
     
     const startIdx = cellOffsetBuffer.element(gridIndex);
     const count = cellCountBuffer.element(gridIndex);

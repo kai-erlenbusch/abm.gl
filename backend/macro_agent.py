@@ -21,7 +21,7 @@ class AggregateStats(BaseModel):
 
 class PolicyResponse(BaseModel):
     infection_radius: float
-    movement_speed: float
+    policy_speed_map: list[list[float]]
     message: str
 
 class ShachiEnvironment:
@@ -57,11 +57,9 @@ class ShachiEnvironment:
         - Active Agents: {parsed_stats.active_agents}
         - Global Average Speed: {parsed_stats.average_speed:.4f}{spatial_context}
         
-        If the average speed is too high (above 0.3), lower the movement_speed to calm them down (e.g. 0.05).
-        If the average speed is too low (below 0.1), increase the movement_speed to energize them (e.g. 0.5).
-        Otherwise, keep it stable.
-        
-        Provide a brief message explaining your decision, particularly noting any spatial anomalies if relevant.
+        You must output a 10x10 `policy_speed_map` (list of 10 lists, each containing 10 floats) representing the speed limit for each of the 100 spatial sectors.
+        If a sector is the hotspot, you may want to lower the speed there (e.g. 0.05) to quarantine them, while letting other sectors move faster (e.g. 0.8).
+        Provide a brief message explaining your decision.
         """
 
         print(f"[Shachi Env] Sending data to LLM...")
@@ -72,10 +70,15 @@ class ShachiEnvironment:
             if not api_key or api_key == "sk-proj-YOUR_API_KEY_HERE":
                 print("[Shachi Env] OPENAI_API_KEY missing. Falling back to mock response.")
                 await asyncio.sleep(2)
+                
+                speed_map = [[0.8 for _ in range(10)] for _ in range(10)]
+                if parsed_stats.grid:
+                    speed_map[hot_sector[0]][hot_sector[1]] = 0.05
+                    
                 return PolicyResponse(
                     infection_radius=10.0,
-                    movement_speed=0.1 if parsed_stats.average_speed > 0.4 else 0.8,
-                    message="Fallback: OPENAI_API_KEY not set."
+                    policy_speed_map=speed_map,
+                    message="Fallback: OPENAI_API_KEY not set. Applied local quarantine to hotspot."
                 )
 
             # LiteLLM structured outputs
@@ -94,9 +97,10 @@ class ShachiEnvironment:
             
         except Exception as e:
             print(f"[Shachi Env] Error during LLM inference: {e}")
+            speed_map = [[0.1 for _ in range(10)] for _ in range(10)]
             return PolicyResponse(
                 infection_radius=10.0,
-                movement_speed=0.1,
+                policy_speed_map=speed_map,
                 message=f"Error: {str(e)}"
             )
 
