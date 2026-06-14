@@ -95,6 +95,64 @@ function TelemetryChart() {
   return <div ref={containerRef} className="w-full h-48 mt-4" />;
 }
 
+// Phase 6: High-performance raw DOM Heatmap (Zero React Re-renders)
+function SpatialHeatmap() {
+  const cellsRef = useRef<(HTMLDivElement | null)[]>([]);
+
+  useEffect(() => {
+    const handleTelemetry = (e: any) => {
+      const { grid } = e.detail;
+      if (!grid) return;
+
+      let maxDensity = 0;
+      for (let r = 0; r < 10; r++) {
+        for (let c = 0; c < 10; c++) {
+          if (grid[r][c].density > maxDensity) {
+            maxDensity = grid[r][c].density;
+          }
+        }
+      }
+
+      // Hardcoded max to prevent flickering (e.g. 15,000 agents)
+      const MAX_THEORETICAL = 15000;
+
+      for (let r = 0; r < 10; r++) {
+        for (let c = 0; c < 10; c++) {
+          const index = r * 10 + c;
+          const cellNode = cellsRef.current[index];
+          if (!cellNode) continue;
+
+          const density = grid[r][c].density;
+          const opacity = Math.min(density / MAX_THEORETICAL, 1.0);
+
+          if (density === maxDensity && density > 0) {
+            // Hotspot tinting: Pink/Red
+            cellNode.style.backgroundColor = `rgba(255, 51, 102, ${Math.max(opacity, 0.5)})`;
+          } else {
+            // Base color: Neon Emerald
+            cellNode.style.backgroundColor = `rgba(0, 255, 136, ${opacity})`;
+          }
+        }
+      }
+    };
+
+    window.addEventListener('abm-telemetry', handleTelemetry);
+    return () => window.removeEventListener('abm-telemetry', handleTelemetry);
+  }, []);
+
+  return (
+    <div className="w-full aspect-square bg-neutral-900 border border-neutral-800 rounded-lg overflow-hidden grid grid-cols-10 grid-rows-10 gap-[1px]">
+      {Array.from({ length: 100 }).map((_, i) => (
+        <div 
+          key={i} 
+          ref={(el) => { cellsRef.current[i] = el; }}
+          className="w-full h-full bg-transparent"
+        />
+      ))}
+    </div>
+  );
+}
+
 export default function DashboardOverlay() {
   const isPaused = useSimulationStore(state => state.isPaused);
   const setIsPaused = useSimulationStore(state => state.setIsPaused);
@@ -134,6 +192,11 @@ export default function DashboardOverlay() {
         <div>
           <h2 className="text-xs uppercase tracking-widest text-neutral-500 mb-2">Real-time Telemetry</h2>
           <TelemetryChart />
+        </div>
+
+        <div className="pt-4 border-t border-neutral-800">
+          <h2 className="text-xs uppercase tracking-widest text-neutral-500 mb-2">Spatial Density Grid</h2>
+          <SpatialHeatmap />
         </div>
 
         <div className="pt-4 border-t border-neutral-800 flex space-x-2">
