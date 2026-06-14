@@ -153,7 +153,7 @@ export const spatialPrefixSum_LocalScanNode = Fn(([cellCountBuffer, cellOffsetBu
     let step = 1;
     let step2 = 2;
     for (let d = 0; d < 8; d++) {
-        If(localId.add(1).remainder(uint(step2)).equal(uint(0)), () => {
+        If(localId.add(1).mod(uint(step2)).equal(uint(0)), () => {
             sharedData.element(localId).addAssign(sharedData.element(localId.sub(uint(step))));
         });
         workgroupBarrier();
@@ -171,7 +171,7 @@ export const spatialPrefixSum_LocalScanNode = Fn(([cellCountBuffer, cellOffsetBu
     step = 128;
     step2 = 256;
     for (let d = 7; d >= 0; d--) {
-        If(localId.add(1).remainder(uint(step2)).equal(uint(0)), () => {
+        If(localId.add(1).mod(uint(step2)).equal(uint(0)), () => {
             const temp = sharedData.element(localId.sub(uint(step))).toVar();
             sharedData.element(localId.sub(uint(step))).assign(sharedData.element(localId));
             sharedData.element(localId).addAssign(temp);
@@ -196,7 +196,7 @@ export const spatialPrefixSum_BlockScanNode = Fn(([chunkSumsBuffer, blockSize]) 
     let step = 1;
     let step2 = 2;
     for (let d = 0; d < 6; d++) {
-        If(localId.add(1).remainder(uint(step2)).equal(uint(0)), () => {
+        If(localId.add(1).mod(uint(step2)).equal(uint(0)), () => {
             sharedData.element(localId).addAssign(sharedData.element(localId.sub(uint(step))));
         });
         workgroupBarrier();
@@ -213,7 +213,7 @@ export const spatialPrefixSum_BlockScanNode = Fn(([chunkSumsBuffer, blockSize]) 
     step = 32;
     step2 = 64;
     for (let d = 5; d >= 0; d--) {
-        If(localId.add(1).remainder(uint(step2)).equal(uint(0)), () => {
+        If(localId.add(1).mod(uint(step2)).equal(uint(0)), () => {
             const temp = sharedData.element(localId.sub(uint(step))).toVar();
             sharedData.element(localId.sub(uint(step))).assign(sharedData.element(localId));
             sharedData.element(localId).addAssign(temp);
