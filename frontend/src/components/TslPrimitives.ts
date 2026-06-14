@@ -1,4 +1,4 @@
-import { Fn, instanceIndex, If, length, atomicAdd, atomicStore, uint, floor, clamp } from 'three/tsl';
+import { Fn, instanceIndex, If, length, atomicAdd, atomicStore, uint, float, floor, clamp, Loop, variable, vec3 } from 'three/tsl';
 
 /**
  * 1. Flocking Behavior Primitive
@@ -50,13 +50,95 @@ export const resetAggregate = Fn(([aggregateBuffer]) => {
     atomicStore(aggregateBuffer.element(i), uint(0));
 });
 
-/**
- * 2. Spatial Grid Collision Primitive
- * Resolves overlapping boundaries between agents using spatial hashing.
- */
-export const gridCollision = Fn(([positions, boundsUniform]) => {
+export const spatialResetNode = Fn(([cellCountBuffer, cellOffsetAtomicBuffer]) => {
+    // 100 threads
     const i = instanceIndex;
-    // Boundary bounce logic would go here
+    atomicStore(cellCountBuffer.element(i), uint(0));
+    atomicStore(cellOffsetAtomicBuffer.element(i), uint(0));
+});
+
+export const spatialCountNode = Fn(([positions, cellCountBuffer]) => {
+    // 1M threads
+    const i = instanceIndex;
+    const pos = positions.element(i);
+    const normX = pos.x.add(25.0);
+    const normY = pos.y.add(25.0);
+    const col = clamp(floor(normX.div(5.0)), 0, 9);
+    const row = clamp(floor(normY.div(5.0)), 0, 9);
+    const gridIndex = row.mul(10).add(col);
+    
+    atomicAdd(cellCountBuffer.element(gridIndex), uint(1));
+});
+
+export const spatialPrefixSumNode = Fn(([cellCountBuffer, cellOffsetBuffer, cellOffsetAtomicBuffer]) => {
+    // 1 thread
+    const total = variable(uint(0));
+    
+    Loop(100, ({ i }) => {
+        cellOffsetBuffer.element(i).assign(total);
+        atomicStore(cellOffsetAtomicBuffer.element(i), total);
+        total.addAssign(cellCountBuffer.element(i));
+    });
+});
+
+export const spatialScatterNode = Fn(([positions, cellOffsetAtomicBuffer, sortedAgentIndicesBuffer]) => {
+    // 1M threads
+    const i = instanceIndex;
+    const pos = positions.element(i);
+    const normX = pos.x.add(25.0);
+    const normY = pos.y.add(25.0);
+    const col = clamp(floor(normX.div(5.0)), 0, 9);
+    const row = clamp(floor(normY.div(5.0)), 0, 9);
+    const gridIndex = row.mul(10).add(col);
+    
+    const slot = atomicAdd(cellOffsetAtomicBuffer.element(gridIndex), uint(1));
+    sortedAgentIndicesBuffer.element(slot).assign(i);
+});
+
+export const spatialCollisionNode = Fn(([positions, velocities, cellCountBuffer, cellOffsetBuffer, sortedAgentIndicesBuffer]) => {
+    // 1M threads
+    const i = instanceIndex;
+    const pos = positions.element(i);
+    const vel = velocities.element(i);
+    
+    const normX = pos.x.add(25.0);
+    const normY = pos.y.add(25.0);
+    const col = clamp(floor(normX.div(5.0)), 0, 9);
+    const row = clamp(floor(normY.div(5.0)), 0, 9);
+    const gridIndex = row.mul(10).add(col);
+    
+    const startIdx = cellOffsetBuffer.element(gridIndex);
+    const count = cellCountBuffer.element(gridIndex);
+    
+    const separation = variable(vec3(0, 0, 0));
+    const neighborsCount = variable(uint(0));
+    
+    Loop(count, ({ i: j }) => {
+        const sortedIndex = startIdx.add(j);
+        const otherAgentId = sortedAgentIndicesBuffer.element(sortedIndex);
+        
+        If(otherAgentId.notEqual(i), () => {
+            const otherPos = positions.element(otherAgentId);
+            const dist = pos.distance(otherPos);
+            
+            // Repulsion threshold
+            If(dist.lessThan(0.5).and(dist.greaterThan(0.001)), () => {
+                const pushDir = pos.sub(otherPos).normalize();
+                const pushStrength = float(0.5).sub(dist); 
+                separation.addAssign(pushDir.mul(pushStrength));
+                neighborsCount.addAssign(1);
+            });
+        });
+    });
+    
+    If(neighborsCount.greaterThan(0), () => {
+        // Average the separation force
+        const avgSeparation = separation.div(float(neighborsCount));
+        
+        // Push the agent and normalize its velocity
+        vel.addAssign(avgSeparation.mul(0.2)); 
+        vel.assign(vel.normalize());
+    });
 });
 
 /**

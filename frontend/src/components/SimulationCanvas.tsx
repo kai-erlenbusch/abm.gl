@@ -8,7 +8,7 @@ import { WebGPURenderer, StorageInstancedBufferAttribute, StorageBufferAttribute
 import { uniform, storage, positionLocal, color, instanceIndex } from 'three/tsl';
 import { useSimulationBridge } from '@/hooks/useSimulationBridge';
 import { useSimulationStore } from '@/store/simulationStore';
-import { flockingBehavior, resetAggregate } from './TslPrimitives';
+import { flockingBehavior, resetAggregate, spatialResetNode, spatialCountNode, spatialPrefixSumNode, spatialScatterNode, spatialCollisionNode } from './TslPrimitives';
 import DashboardOverlay from './DashboardOverlay';
 
 // The massive scale WebGPU is capable of
@@ -20,6 +20,14 @@ function MicroEngine() {
   
   const [computeNode, setComputeNode] = useState<any>(null);
   const [resetComputeNode, setResetComputeNode] = useState<any>(null);
+  
+  // Spatial Grid Nodes
+  const [pass0Node, setPass0Node] = useState<any>(null);
+  const [pass1Node, setPass1Node] = useState<any>(null);
+  const [pass2Node, setPass2Node] = useState<any>(null);
+  const [pass3Node, setPass3Node] = useState<any>(null);
+  const [pass4Node, setPass4Node] = useState<any>(null);
+
   const [material, setMaterial] = useState<any>(null);
   const [speedUniform] = useState(() => uniform(0.1));
   const [aggregateAttribute, setAggregateAttribute] = useState<any>(null);
@@ -57,7 +65,29 @@ function MicroEngine() {
     const resetNode = resetAggregate(aggregateNode.toAtomic());
     setResetComputeNode(resetNode.compute(200)); // 200 threads for 200 cells
 
-    // 3. WebGPU Material Binding
+    // 3. Spatial Grid Buffers (Point D)
+    const cellCountArray = new Uint32Array(100);
+    const cellOffsetArray = new Uint32Array(100);
+    const cellOffsetAtomicArray = new Uint32Array(100);
+    const sortedAgentArray = new Uint32Array(AGENT_COUNT);
+    
+    const countAttr = new StorageBufferAttribute(cellCountArray, 1);
+    const offsetAttr = new StorageBufferAttribute(cellOffsetArray, 1);
+    const offsetAtomicAttr = new StorageBufferAttribute(cellOffsetAtomicArray, 1);
+    const sortedAttr = new StorageBufferAttribute(sortedAgentArray, 1);
+    
+    const countNode = storage(countAttr, 'uint', 100);
+    const offsetNode = storage(offsetAttr, 'uint', 100);
+    const offsetAtomicNode = storage(offsetAtomicAttr, 'uint', 100);
+    const sortedNode = storage(sortedAttr, 'uint', AGENT_COUNT);
+
+    setPass0Node(spatialResetNode(countNode.toAtomic(), offsetAtomicNode.toAtomic()).compute(100));
+    setPass1Node(spatialCountNode(positionsNode, countNode.toAtomic()).compute(AGENT_COUNT));
+    setPass2Node(spatialPrefixSumNode(countNode, offsetNode, offsetAtomicNode.toAtomic()).compute(1));
+    setPass3Node(spatialScatterNode(positionsNode, offsetAtomicNode.toAtomic(), sortedNode).compute(AGENT_COUNT));
+    setPass4Node(spatialCollisionNode(positionsNode, velocitiesNode, countNode, offsetNode, sortedNode).compute(AGENT_COUNT));
+
+    // 4. WebGPU Material Binding
     const mat = new MeshBasicNodeMaterial();
     mat.positionNode = positionLocal.add(positionsNode.element(instanceIndex)); 
     mat.colorNode = color("#00ff88");
@@ -79,6 +109,7 @@ function MicroEngine() {
 
   useFrame(async (state, delta) => {
     if (!meshRef.current || !computeNode || !resetComputeNode || !aggregateAttribute) return;
+    if (!pass0Node || !pass1Node || !pass2Node || !pass3Node || !pass4Node) return;
     
     // Check if our WebGPU hack has initialized
     if (!(state.gl as any).__initialized) return;
@@ -90,6 +121,13 @@ function MicroEngine() {
     // Execute Micro Engine physics via WebGPU Compute Shader natively!
     await (state.gl as any).computeAsync(resetComputeNode);
     await (state.gl as any).computeAsync(computeNode);
+    
+    // Execute Point D: 5-Pass Spatial Hash Grid
+    await (state.gl as any).computeAsync(pass0Node);
+    await (state.gl as any).computeAsync(pass1Node);
+    await (state.gl as any).computeAsync(pass2Node);
+    await (state.gl as any).computeAsync(pass3Node);
+    await (state.gl as any).computeAsync(pass4Node);
     
     // CPU Aggregation (Readback API)
     const time = state.clock.getElapsedTime();
