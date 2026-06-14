@@ -279,26 +279,25 @@ export const spatialCollisionNode = Fn(([positions, velocities, cellCountBuffer,
             const startIdx = cellOffsetBuffer.element(neighborGridIndex);
             const count = atomicLoad(cellCountBuffer.element(neighborGridIndex));
             
-            // Use a static loop of 64 iterations and break/ignore dynamically
-            // This strictly satisfies TSL Loop uint requirements while preventing TDR crashes
-            Loop(uint(64), ({ i: j }) => {
+            // Use a dynamic loop bounded by the actual neighbor count, capped at 256
+            // This dynamically speeds up sparse regions while preventing TDR crashes in dense swarms
+            const loopCap = min(count, uint(256));
+            Loop(loopCap, ({ i: j }) => {
                 const jUint = uint(j);
-                If(jUint.lessThan(count), () => {
-                    const sortedIndex = startIdx.add(jUint);
-                    const otherAgentId = sortedAgentIndicesBuffer.element(sortedIndex);
+                const sortedIndex = startIdx.add(jUint);
+                const otherAgentId = sortedAgentIndicesBuffer.element(sortedIndex);
+                
+                If(otherAgentId.notEqual(i), () => {
+                    const otherPos = positions.element(otherAgentId);
                     
-                    If(otherAgentId.notEqual(i), () => {
-                        const otherPos = positions.element(otherAgentId);
-                        
-                        const dist = pos.distance(otherPos);
-                        
-                        // Repulsion threshold
-                        If(dist.lessThan(0.5).and(dist.greaterThan(0.001)), () => {
-                            const pushDir = pos.sub(otherPos).normalize();
-                            const pushStrength = float(0.5).sub(dist); 
-                            separation.addAssign(pushDir.mul(pushStrength));
-                            neighborsCount.addAssign(uint(1));
-                        });
+                    const dist = pos.distance(otherPos);
+                    
+                    // Repulsion threshold
+                    If(dist.lessThan(0.5).and(dist.greaterThan(0.001)), () => {
+                        const pushDir = pos.sub(otherPos).normalize();
+                        const pushStrength = float(0.5).sub(dist); 
+                        separation.addAssign(pushDir.mul(pushStrength));
+                        neighborsCount.addAssign(uint(1));
                     });
                 });
             });
