@@ -8,7 +8,7 @@ import { WebGPURenderer, StorageInstancedBufferAttribute, StorageBufferAttribute
 import { uniform, storage, positionLocal, color, instanceIndex, texture } from 'three/tsl';
 import { useSimulationBridge } from '@/hooks/useSimulationBridge';
 import { useSimulationStore } from '@/store/simulationStore';
-import { flockingBehavior, resetAggregate, spatialResetNode, spatialCountNode, spatialPrefixSumNode, spatialScatterNode, spatialCollisionNode } from './TslPrimitives';
+import { flockingBehavior, resetAggregate, spatialResetNode, spatialCountNode, spatialPrefixSum_LocalScanNode, spatialPrefixSum_BlockScanNode, spatialPrefixSum_AddNode, spatialScatterNode, spatialCollisionNode } from './TslPrimitives';
 import DashboardOverlay from './DashboardOverlay';
 
 // The massive scale WebGPU is capable of
@@ -24,7 +24,9 @@ function MicroEngine() {
   // Spatial Grid Nodes
   const [pass0Node, setPass0Node] = useState<any>(null);
   const [pass1Node, setPass1Node] = useState<any>(null);
-  const [pass2Node, setPass2Node] = useState<any>(null);
+  const [pass2aNode, setPass2aNode] = useState<any>(null);
+  const [pass2bNode, setPass2bNode] = useState<any>(null);
+  const [pass2cNode, setPass2cNode] = useState<any>(null);
   const [pass3Node, setPass3Node] = useState<any>(null);
   const [pass4Node, setPass4Node] = useState<any>(null);
 
@@ -75,24 +77,41 @@ function MicroEngine() {
     setResetComputeNode(resetNode.compute(200)); // 200 threads for 200 cells
 
     // 3. Spatial Grid Buffers (Point D & V2 Decoupling)
-    const cellCountArray = new Uint32Array(10000);
-    const cellOffsetArray = new Uint32Array(10000);
-    const cellOffsetAtomicArray = new Uint32Array(10000);
+    // Pad to 10240 (40 chunks of 256) for Blelloch Scan alignment
+    const cellCountArray = new Uint32Array(10240);
+    const cellOffsetArray = new Uint32Array(10240);
+    const cellOffsetAtomicArray = new Uint32Array(10240);
+    const chunkSumsArray = new Uint32Array(64);
     const sortedAgentArray = new Uint32Array(AGENT_COUNT);
     
     const countAttr = new StorageBufferAttribute(cellCountArray, 1);
     const offsetAttr = new StorageBufferAttribute(cellOffsetArray, 1);
     const offsetAtomicAttr = new StorageBufferAttribute(cellOffsetAtomicArray, 1);
+    const chunkSumsAttr = new StorageBufferAttribute(chunkSumsArray, 1);
     const sortedAttr = new StorageBufferAttribute(sortedAgentArray, 1);
     
-    const countNode = storage(countAttr, 'uint', 10000);
-    const offsetNode = storage(offsetAttr, 'uint', 10000);
-    const offsetAtomicNode = storage(offsetAtomicAttr, 'uint', 10000);
+    const countNode = storage(countAttr, 'uint', 10240);
+    const offsetNode = storage(offsetAttr, 'uint', 10240);
+    const offsetAtomicNode = storage(offsetAtomicAttr, 'uint', 10240);
+    const chunkSumsNode = storage(chunkSumsAttr, 'uint', 64);
     const sortedNode = storage(sortedAttr, 'uint', AGENT_COUNT);
 
-    setPass0Node(spatialResetNode(countNode.toAtomic(), offsetAtomicNode.toAtomic()).compute(10000));
+    setPass0Node(spatialResetNode(countNode.toAtomic(), offsetAtomicNode.toAtomic()).compute(10240));
     setPass1Node(spatialCountNode(positionsNode, countNode.toAtomic()).compute(AGENT_COUNT));
-    setPass2Node(spatialPrefixSumNode(countNode, offsetNode, offsetAtomicNode.toAtomic()).compute(1));
+    
+    // 3-Pass Parallel Blelloch Scan
+    const pass2a = spatialPrefixSum_LocalScanNode(countNode, offsetNode, chunkSumsNode).compute(10240);
+    pass2a.workgroupSize = [256, 1, 1];
+    setPass2aNode(pass2a);
+    
+    const pass2b = spatialPrefixSum_BlockScanNode(chunkSumsNode).compute(64);
+    pass2b.workgroupSize = [64, 1, 1];
+    setPass2bNode(pass2b);
+    
+    const pass2c = spatialPrefixSum_AddNode(offsetNode, offsetAtomicNode.toAtomic(), chunkSumsNode).compute(10240);
+    pass2c.workgroupSize = [256, 1, 1];
+    setPass2cNode(pass2c);
+    
     setPass3Node(spatialScatterNode(positionsNode, offsetAtomicNode.toAtomic(), sortedNode).compute(AGENT_COUNT));
     setPass4Node(spatialCollisionNode(positionsNode, velocitiesNode, countNode, offsetNode, sortedNode).compute(AGENT_COUNT));
 
@@ -131,7 +150,7 @@ function MicroEngine() {
 
   useFrame(async (state, delta) => {
     if (!meshRef.current || !computeNode || !resetComputeNode || !aggregateAttribute) return;
-    if (!pass0Node || !pass1Node || !pass2Node || !pass3Node || !pass4Node) return;
+    if (!pass0Node || !pass1Node || !pass2aNode || !pass2bNode || !pass2cNode || !pass3Node || !pass4Node) return;
     
     // Check if our WebGPU hack has initialized
     if (!(state.gl as any).__initialized) return;
@@ -147,7 +166,9 @@ function MicroEngine() {
     // Execute Point D: 5-Pass Spatial Hash Grid
     await (state.gl as any).computeAsync(pass0Node);
     await (state.gl as any).computeAsync(pass1Node);
-    await (state.gl as any).computeAsync(pass2Node);
+    await (state.gl as any).computeAsync(pass2aNode);
+    await (state.gl as any).computeAsync(pass2bNode);
+    await (state.gl as any).computeAsync(pass2cNode);
     await (state.gl as any).computeAsync(pass3Node);
     await (state.gl as any).computeAsync(pass4Node);
     

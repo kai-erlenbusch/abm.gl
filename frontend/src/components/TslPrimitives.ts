@@ -1,4 +1,4 @@
-import { Fn, instanceIndex, If, length, atomicAdd, atomicStore, atomicLoad, uint, int, float, floor, clamp, Loop, vec3, texture, vec2, min } from 'three/tsl';
+import { Fn, instanceIndex, If, length, atomicAdd, atomicStore, atomicLoad, uint, int, float, floor, clamp, Loop, vec3, texture, vec2, min, workgroupArray, workgroupBarrier, workgroupId, invocationLocalIndex } from 'three/tsl';
 
 /**
  * 1. Flocking Behavior Primitive
@@ -77,16 +77,106 @@ export const spatialCountNode = Fn(([positions, cellCountBuffer]) => {
     atomicAdd(cellCountBuffer.element(gridIndex), uint(1));
 });
 
-export const spatialPrefixSumNode = Fn(([cellCountBuffer, cellOffsetBuffer, cellOffsetAtomicBuffer]) => {
-    // 1 thread
-    const total = uint(0).toVar();
+export const spatialPrefixSum_LocalScanNode = Fn(([cellCountBuffer, cellOffsetBuffer, chunkSumsBuffer]) => {
+    // 40 workgroups of 256 threads (10240 total)
+    const i = instanceIndex;
+    const localId = invocationLocalIndex;
+    const groupId = workgroupId.x;
     
-    // TODO: Implement Parallel Blelloch Scan algorithm for O(log n) scaling
-    Loop(10000, ({ i }) => {
-        cellOffsetBuffer.element(i).assign(total);
-        atomicStore(cellOffsetAtomicBuffer.element(i), total);
-        total.addAssign(atomicLoad(cellCountBuffer.element(i)));
+    // Create shared memory for this workgroup
+    const sharedData = workgroupArray('uint', 256);
+    
+    // Load from global to shared memory
+    sharedData.element(localId).assign(cellCountBuffer.element(i));
+    workgroupBarrier();
+    
+    // Blelloch Up-Sweep (Reduce) - 8 steps for 256 elements
+    let step = 1;
+    let step2 = 2;
+    for (let d = 0; d < 8; d++) {
+        If(localId.add(1).remainder(uint(step2)).equal(uint(0)), () => {
+            sharedData.element(localId).addAssign(sharedData.element(localId.sub(uint(step))));
+        });
+        workgroupBarrier();
+        step = step2;
+        step2 = step2 * 2;
+    }
+    
+    // Blelloch Down-Sweep
+    If(localId.equal(255), () => {
+        chunkSumsBuffer.element(groupId).assign(sharedData.element(255));
+        sharedData.element(255).assign(uint(0));
     });
+    workgroupBarrier();
+    
+    step = 128;
+    step2 = 256;
+    for (let d = 7; d >= 0; d--) {
+        If(localId.add(1).remainder(uint(step2)).equal(uint(0)), () => {
+            const temp = sharedData.element(localId.sub(uint(step))).toVar();
+            sharedData.element(localId.sub(uint(step))).assign(sharedData.element(localId));
+            sharedData.element(localId).addAssign(temp);
+        });
+        workgroupBarrier();
+        step2 = step;
+        step = Math.floor(step / 2);
+    }
+    
+    cellOffsetBuffer.element(i).assign(sharedData.element(localId));
+});
+
+export const spatialPrefixSum_BlockScanNode = Fn(([chunkSumsBuffer]) => {
+    // 1 workgroup of 64 threads
+    const localId = invocationLocalIndex;
+    const sharedData = workgroupArray('uint', 64);
+    
+    sharedData.element(localId).assign(chunkSumsBuffer.element(localId));
+    workgroupBarrier();
+    
+    // Up-sweep 6 steps for 64 elements
+    let step = 1;
+    let step2 = 2;
+    for (let d = 0; d < 6; d++) {
+        If(localId.add(1).remainder(uint(step2)).equal(uint(0)), () => {
+            sharedData.element(localId).addAssign(sharedData.element(localId.sub(uint(step))));
+        });
+        workgroupBarrier();
+        step = step2;
+        step2 = step2 * 2;
+    }
+    
+    If(localId.equal(63), () => {
+        sharedData.element(63).assign(uint(0));
+    });
+    workgroupBarrier();
+    
+    // Down-sweep 6 steps
+    step = 32;
+    step2 = 64;
+    for (let d = 5; d >= 0; d--) {
+        If(localId.add(1).remainder(uint(step2)).equal(uint(0)), () => {
+            const temp = sharedData.element(localId.sub(uint(step))).toVar();
+            sharedData.element(localId.sub(uint(step))).assign(sharedData.element(localId));
+            sharedData.element(localId).addAssign(temp);
+        });
+        workgroupBarrier();
+        step2 = step;
+        step = Math.floor(step / 2);
+    }
+    
+    chunkSumsBuffer.element(localId).assign(sharedData.element(localId));
+});
+
+export const spatialPrefixSum_AddNode = Fn(([cellOffsetBuffer, cellOffsetAtomicBuffer, chunkSumsBuffer]) => {
+    // 40 workgroups of 256 = 10240
+    const i = instanceIndex;
+    const groupId = workgroupId.x;
+    
+    const baseOffset = chunkSumsBuffer.element(groupId);
+    const finalOffset = cellOffsetBuffer.element(i).add(baseOffset);
+    
+    cellOffsetBuffer.element(i).assign(finalOffset);
+    atomicStore(cellOffsetAtomicBuffer.element(i), finalOffset);
 });
 
 export const spatialScatterNode = Fn(([positions, cellOffsetAtomicBuffer, sortedAgentIndicesBuffer]) => {

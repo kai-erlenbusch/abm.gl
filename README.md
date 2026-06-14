@@ -123,8 +123,11 @@ Following the Phase 5 prototype, the simulation underwent a massive architectura
 
 ---
 
+## GPU Performance Upgrades (Complete)
+- **Parallel Blelloch Scan**: Replaced the $O(N)$ single-threaded prefix sum with a 3-pass Chunked Parallel Blelloch Scan in TSL. Utilizes `workgroupArray` shared memory and `workgroupBarrier()` to achieve work-efficient $O(N)$ compute with $O(\log N)$ step depth, completely unblocking the 1,000,000 agent scale.
+
 ## GPU Performance Upgrades (Planned)
-- **Parallel Blelloch Scan**: The GPU spatial hash grid currently relies on an $O(N)$ single-threaded prefix sum. To unlock maximum WebGPU parallel potential at the 1,000,000 agent scale, we are implementing a 3-pass Chunked Parallel Blelloch Scan in TSL, utilizing `workgroupArray` shared memory and `workgroupBarrier()` to achieve work-efficient $O(N)$ compute with $O(\log N)$ step depth.
+- **Atomic Contention Mitigation**: The 100x100 spatial hash currently relies on a naive global `atomicAdd()`, which severely bottlenecks the L2 cache when agents flock densely into a single cell. We plan to implement a Workgroup-Local Bitonic Sort and Run-Length Batching strategy. By locally sorting agents in shared `workgroupArray` memory, we can batch contiguous runs and reduce 256 global atomic operations to a single atomic operation per workgroup.
 
 ---
 
