@@ -83,9 +83,9 @@ function MicroEngine() {
     // Check if our WebGPU hack has initialized
     if (!(state.gl as any).__initialized) return;
 
-    // --- LOCKSTEP TIME SYNCHRONIZATION ---
+    // --- ASYNC PHYSICS ---
     const { isPaused, lastLlmSend, setLastLlmSend } = useSimulationStore.getState();
-    if (isMacroThinking || isPaused) return;
+    if (isPaused) return;
 
     // Execute Micro Engine physics via WebGPU Compute Shader natively!
     await (state.gl as any).computeAsync(resetComputeNode);
