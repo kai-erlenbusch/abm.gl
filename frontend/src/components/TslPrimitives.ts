@@ -1,4 +1,4 @@
-import { Fn, instanceIndex, If, length, atomicAdd, atomicStore, uint, float, floor, clamp, Loop, variable, vec3, texture, vec2 } from 'three/tsl';
+import { Fn, instanceIndex, If, length, atomicAdd, atomicStore, uint, float, floor, clamp, loop, variable, vec3, texture, vec2 } from 'three/tsl';
 
 /**
  * 1. Flocking Behavior Primitive
@@ -81,7 +81,7 @@ export const spatialPrefixSumNode = Fn(([cellCountBuffer, cellOffsetBuffer, cell
     // 1 thread
     const total = variable(uint(0));
     
-    Loop(10000, ({ i }) => {
+    loop(10000, ({ i }) => {
         cellOffsetBuffer.element(i).assign(total);
         atomicStore(cellOffsetAtomicBuffer.element(i), total);
         total.addAssign(cellCountBuffer.element(i));
@@ -124,7 +124,7 @@ export const spatialCollisionNode = Fn(([positions, velocities, cellCountBuffer,
     const separation = variable(vec3(0, 0, 0));
     const neighborsCount = variable(uint(0));
     
-    Loop(count, ({ i: j }) => {
+    loop(count, ({ i: j }) => {
         const sortedIndex = startIdx.add(j);
         const otherAgentId = sortedAgentIndicesBuffer.element(sortedIndex);
         
