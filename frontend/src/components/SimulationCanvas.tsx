@@ -7,6 +7,7 @@ import { WebGPURenderer, StorageInstancedBufferAttribute, StorageBufferAttribute
 // @ts-ignore
 import { uniform, storage, positionLocal, color, instanceIndex } from 'three/tsl';
 import { useSimulationBridge } from '@/hooks/useSimulationBridge';
+import { useSimulationStore } from '@/store/simulationStore';
 import { flockingBehavior, resetAggregate } from './TslPrimitives';
 import DashboardOverlay from './DashboardOverlay';
 
@@ -83,8 +84,8 @@ function MicroEngine() {
     if (!(state.gl as any).__initialized) return;
 
     // --- LOCKSTEP TIME SYNCHRONIZATION ---
-    // @ts-ignore
-    if (isMacroThinking || window.abmPaused) return;
+    const { isPaused, lastLlmSend, setLastLlmSend } = useSimulationStore.getState();
+    if (isMacroThinking || isPaused) return;
 
     // Execute Micro Engine physics via WebGPU Compute Shader natively!
     await (state.gl as any).computeAsync(resetComputeNode);
@@ -111,10 +112,8 @@ function MicroEngine() {
         }));
 
         // 2. Low-frequency payload for LLM backend (every 5 seconds)
-        // @ts-ignore
-        if (!window.lastLlmSend || time - window.lastLlmSend > 5) {
-          // @ts-ignore
-          window.lastLlmSend = time;
+        if (time - lastLlmSend > 5) {
+          setLastLlmSend(time);
           sendAggregateStats({
             active_agents: AGENT_COUNT,
             average_speed: avgSpeed,

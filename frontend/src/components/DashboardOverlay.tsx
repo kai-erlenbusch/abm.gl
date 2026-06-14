@@ -1,6 +1,7 @@
 'use client';
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useRef } from 'react';
 import { ChartGPU } from 'chartgpu';
+import { useSimulationStore } from '@/store/simulationStore';
 
 // Custom wrapper for ChartGPU
 function TelemetryChart() {
@@ -13,7 +14,12 @@ function TelemetryChart() {
   
   const startTime = useRef(Date.now());
 
+  const initStarted = useRef(false);
+
   useEffect(() => {
+    if (initStarted.current) return;
+    initStarted.current = true;
+
     let isMounted = true;
     
     async function initChart() {
@@ -90,7 +96,8 @@ function TelemetryChart() {
 }
 
 export default function DashboardOverlay() {
-  const [isPaused, setIsPaused] = useState(false);
+  const isPaused = useSimulationStore(state => state.isPaused);
+  const setIsPaused = useSimulationStore(state => state.setIsPaused);
 
   return (
     <div className="absolute top-4 left-4 z-10 w-96 text-white font-mono text-sm bg-black/50 backdrop-blur-md p-6 rounded-xl border border-neutral-800 shadow-2xl pointer-events-auto">
@@ -132,10 +139,7 @@ export default function DashboardOverlay() {
         <div className="pt-4 border-t border-neutral-800 flex space-x-2">
            <button 
              onClick={() => {
-               const newPaused = !isPaused;
-               setIsPaused(newPaused);
-               // @ts-ignore
-               window.abmPaused = newPaused;
+               setIsPaused(!isPaused);
              }}
              className={`flex-1 py-2 rounded-lg text-xs font-bold transition-colors ${
                isPaused ? 'bg-amber-500/20 text-amber-500 hover:bg-amber-500/30' : 'bg-neutral-800 hover:bg-neutral-700'
