@@ -1,4 +1,4 @@
-import { Fn, instanceIndex, If, length, atomicAdd, atomicStore, atomicLoad, uint, int, float, floor, clamp, Loop, vec3, texture, vec2, min, workgroupArray, workgroupBarrier, workgroupId, invocationLocalIndex } from 'three/tsl';
+import { Fn, instanceIndex, If, length, atomicAdd, atomicStore, atomicLoad, uint, int, float, floor, clamp, Loop, vec3, texture, vec2, min, workgroupArray, workgroupBarrier, workgroupId, invocationLocalIndex, Break } from 'three/tsl';
 
 /**
  * 1. Flocking Behavior Primitive
@@ -63,18 +63,77 @@ export const spatialResetNode = Fn(([cellCountBuffer, cellOffsetAtomicBuffer]) =
 });
 
 export const spatialCountNode = Fn(([positions, cellCountBuffer]) => {
-    // 1M threads
+    // 10240 threads, 40 workgroups of 256
     const i = instanceIndex;
-    const pos = positions.element(i);
-    const normX = pos.x.add(25.0);
-    const normY = pos.y.add(25.0);
+    const localId = invocationLocalIndex;
     
-    // 100x100 grid, cell size 0.5
-    const col = clamp(floor(normX.div(0.5)), 0, 99);
-    const row = clamp(floor(normY.div(0.5)), 0, 99);
-    const gridIndex = row.mul(100).add(col);
+    const sharedArray = workgroupArray('uint', 256);
     
-    atomicAdd(cellCountBuffer.element(gridIndex), uint(1));
+    // Bounds check for padding
+    If(i.lessThan(10000), () => {
+        const pos = positions.element(i);
+        const normX = pos.x.add(25.0);
+        const normY = pos.y.add(25.0);
+        
+        // 100x100 grid, cell size 0.5
+        const col = clamp(floor(normX.div(0.5)), 0, 99);
+        const row = clamp(floor(normY.div(0.5)), 0, 99);
+        const gridIndex = row.mul(100).add(col);
+        
+        sharedArray.element(localId).assign(gridIndex);
+    }).Else(() => {
+        // Out-of-bounds padding agents placed at the very end
+        sharedArray.element(localId).assign(999999);
+    });
+    
+    workgroupBarrier();
+    
+    // Bitonic Sort (ascending) for N=256 elements
+    for (let k = 2; k <= 256; k *= 2) {
+        for (let j = k / 2; j > 0; j = Math.floor(j / 2)) {
+            const ixj = localId.bitXor(uint(j));
+            If(ixj.greaterThan(localId), () => {
+                const dir = localId.bitAnd(uint(k)).equal(uint(0)); // true for ascending
+                const valA = sharedArray.element(localId).toVar();
+                const valB = sharedArray.element(ixj).toVar();
+                
+                // If ascending and valA > valB, or descending and valA < valB, swap
+                If(dir.equal(valA.greaterThan(valB)), () => {
+                    sharedArray.element(localId).assign(valB);
+                    sharedArray.element(ixj).assign(valA);
+                });
+            });
+            workgroupBarrier();
+        }
+    }
+    
+    // Run-Length Encoding / Batching
+    const isStart = localId.equal(0).or(sharedArray.element(localId).notEqual(sharedArray.element(localId.sub(1))));
+    
+    If(isStart, () => {
+        const currentGridIndex = sharedArray.element(localId);
+        
+        // Only valid grid indices
+        If(currentGridIndex.lessThan(10000), () => {
+            const runLength = uint(1).toVar();
+            
+            // Forward scan divergence trap (accepted as MVP)
+            Loop(256, ({ i: j }) => {
+                const targetIdx = localId.add(j).add(1);
+                If(targetIdx.lessThan(256), () => {
+                    If(sharedArray.element(targetIdx).equal(currentGridIndex), () => {
+                        runLength.addAssign(1);
+                    }).Else(() => {
+                        Break();
+                    });
+                }).Else(() => {
+                    Break();
+                });
+            });
+            
+            atomicAdd(cellCountBuffer.element(currentGridIndex), runLength);
+        });
+    });
 });
 
 export const spatialPrefixSum_LocalScanNode = Fn(([cellCountBuffer, cellOffsetBuffer, chunkSumsBuffer]) => {
@@ -125,15 +184,15 @@ export const spatialPrefixSum_LocalScanNode = Fn(([cellCountBuffer, cellOffsetBu
     cellOffsetBuffer.element(i).assign(sharedData.element(localId));
 });
 
-export const spatialPrefixSum_BlockScanNode = Fn(([chunkSumsBuffer]) => {
-    // 1 workgroup of 64 threads
+export const spatialPrefixSum_BlockScanNode = Fn(([chunkSumsBuffer, blockSize]) => {
+    // 1 workgroup of blockSize threads
     const localId = invocationLocalIndex;
-    const sharedData = workgroupArray('uint', 64);
+    const sharedData = workgroupArray('uint', 64); // Allocate max block size needed for the prototype
     
     sharedData.element(localId).assign(chunkSumsBuffer.element(localId));
     workgroupBarrier();
     
-    // Up-sweep 6 steps for 64 elements
+    // Up-sweep max 6 steps (log2 64 = 6) - dynamically capped based on blockSize if needed, but 64 is fixed array size
     let step = 1;
     let step2 = 2;
     for (let d = 0; d < 6; d++) {
@@ -145,8 +204,8 @@ export const spatialPrefixSum_BlockScanNode = Fn(([chunkSumsBuffer]) => {
         step2 = step2 * 2;
     }
     
-    If(localId.equal(63), () => {
-        sharedData.element(63).assign(uint(0));
+    If(localId.equal(blockSize.sub(1)), () => {
+        sharedData.element(blockSize.sub(1)).assign(uint(0));
     });
     workgroupBarrier();
     

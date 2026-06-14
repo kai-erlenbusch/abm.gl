@@ -97,14 +97,17 @@ function MicroEngine() {
     const sortedNode = storage(sortedAttr, 'uint', AGENT_COUNT);
 
     setPass0Node(spatialResetNode(countNode.toAtomic(), offsetAtomicNode.toAtomic()).compute(10240));
-    setPass1Node(spatialCountNode(positionsNode, countNode.toAtomic()).compute(AGENT_COUNT));
+    
+    const pass1 = spatialCountNode(positionsNode, countNode.toAtomic()).compute(10240);
+    pass1.workgroupSize = [256, 1, 1];
+    setPass1Node(pass1);
     
     // 3-Pass Parallel Blelloch Scan
     const pass2a = spatialPrefixSum_LocalScanNode(countNode, offsetNode, chunkSumsNode).compute(10240);
     pass2a.workgroupSize = [256, 1, 1];
     setPass2aNode(pass2a);
     
-    const pass2b = spatialPrefixSum_BlockScanNode(chunkSumsNode).compute(64);
+    const pass2b = spatialPrefixSum_BlockScanNode(chunkSumsNode, 64).compute(64);
     pass2b.workgroupSize = [64, 1, 1];
     setPass2bNode(pass2b);
     
@@ -143,7 +146,6 @@ function MicroEngine() {
           data[i+3] = 1;
         }
       }
-      policyTexture.needsUpdate = true;
       policyTexture.needsUpdate = true;
     }
   }, [currentPolicy, policyTexture]);
