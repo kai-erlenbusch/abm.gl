@@ -42,7 +42,7 @@ export const flockingBehavior = Fn(([positions, velocities, policyMapTexture, ag
     const speedIndex = gridIndex.mul(2);
     const countIndex = gridIndex.mul(2).add(1);
 
-    const speed = length(vel);
+    const speed = length(vel).mul(speedLocal);
     
     // Accumulate speed (scaled by 100) and agent count per cell
     atomicAdd(aggregateBuffer.element(speedIndex), uint(speed.mul(100.0)));
