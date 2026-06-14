@@ -14,10 +14,12 @@ export function useSimulationBridge(url: string = 'ws://localhost:8000/ws') {
 
   useEffect(() => {
     const token = process.env.NEXT_PUBLIC_SIMULATION_TOKEN || "dev_secret_token";
-    const wsUrl = `${url}?token=${token}`;
-    ws.current = new WebSocket(wsUrl);
+    ws.current = new WebSocket(url);
 
-    ws.current.onopen = () => setIsConnected(true);
+    ws.current.onopen = () => {
+      setIsConnected(true);
+      ws.current?.send(JSON.stringify({ auth_token: token }));
+    };
     ws.current.onclose = () => setIsConnected(false);
 
     ws.current.onmessage = (event) => {

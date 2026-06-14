@@ -4,6 +4,7 @@ import json
 from pydantic import BaseModel
 from dotenv import load_dotenv
 from litellm import acompletion
+from tenacity import retry, stop_after_attempt, wait_exponential
 
 load_dotenv()
 
@@ -43,22 +44,26 @@ class ShachiEnvironment:
     def __init__(self):
         self.current_state = None
         
+    @retry(stop=stop_after_attempt(3), wait=wait_exponential(multiplier=1, min=2, max=10), reraise=True)
     async def get_advisor_proposal(self, role: str, prompt: str) -> AdvisorResponse | None:
+        api_key = os.getenv("OPENAI_API_KEY")
+        if not api_key or api_key == "sk-proj-YOUR_API_KEY_HERE":
+            return None
+        
+        response = await acompletion(
+            model="gpt-4o-mini",
+            messages=[{"role": "user", "content": prompt}],
+            response_format=AdvisorResponse,
+        )
+        content = response.choices[0].message.content
+        print(f"[{role}] Proposal JSON: {content}")
+        return AdvisorResponse.model_validate_json(content)
+
+    async def safe_get_advisor_proposal(self, role: str, prompt: str) -> AdvisorResponse | None:
         try:
-            api_key = os.getenv("OPENAI_API_KEY")
-            if not api_key or api_key == "sk-proj-YOUR_API_KEY_HERE":
-                return None
-            
-            response = await acompletion(
-                model="gpt-4o-mini",
-                messages=[{"role": "user", "content": prompt}],
-                response_format=AdvisorResponse,
-            )
-            content = response.choices[0].message.content
-            print(f"[{role}] Proposal JSON: {content}")
-            return AdvisorResponse.model_validate_json(content)
+            return await self.get_advisor_proposal(role, prompt)
         except Exception as e:
-            print(f"[{role}] Error: {e}")
+            print(f"[{role}] Failed after retries: {e}")
             return None
 
     async def step(self, stats: dict) -> FrontendPolicyPayload:
@@ -69,7 +74,7 @@ class ShachiEnvironment:
         parsed_stats = AggregateStats(**stats)
         print(f"[Shachi Env] Processing tick {parsed_stats.tick} for {parsed_stats.active_agents} agents...")
         
-        # Analyze spatial grid to find hotspots
+        # Analyze spatial grid to find hotspots and build ASCII heatmap
         spatial_context = ""
         hot_sector = (0,0)
         if parsed_stats.grid:
@@ -81,7 +86,19 @@ class ShachiEnvironment:
                         max_density = cell.density
                         hot_sector = (r, c)
                         hot_speed = cell.average_speed
-            spatial_context = f"\n        Spatial Context: The highest concentration of agents ({max_density} agents) is currently localized in Sector {hot_sector} with local speed {hot_speed:.4f}."
+            
+            heatmap_str = "No agents present."
+            if max_density > 0:
+                heatmap_rows = []
+                for row in parsed_stats.grid:
+                    heatmap_chars = []
+                    for cell in row:
+                        val = int((cell.density / max_density) * 9)
+                        heatmap_chars.append(str(val))
+                    heatmap_rows.append("".join(heatmap_chars))
+                heatmap_str = "\n".join(heatmap_rows)
+            
+            spatial_context = f"\n        Spatial Context: The highest concentration of agents ({max_density} agents) is currently localized in Sector {hot_sector} with local speed {hot_speed:.4f}.\n        Density Heatmap (0-9 scale):\n        " + heatmap_str.replace("\n", "\n        ")
 
         health_prompt = f"""
         You are the 'Public Health Advisor' for a {parsed_stats.active_agents} agent simulation.
@@ -122,8 +139,8 @@ class ShachiEnvironment:
 
         # Run Advisors Concurrently
         health_proposal, econ_proposal = await asyncio.gather(
-            self.get_advisor_proposal("Health Advisor", health_prompt),
-            self.get_advisor_proposal("Economist Advisor", econ_prompt)
+            self.safe_get_advisor_proposal("Health Advisor", health_prompt),
+            self.safe_get_advisor_proposal("Economist Advisor", econ_prompt)
         )
 
         mayor_prompt = f"""

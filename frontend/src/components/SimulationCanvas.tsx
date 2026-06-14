@@ -195,13 +195,13 @@ function MicroEngine() {
             const totalSpeedScaled = uintArray[index * 2];
             const count = uintArray[index * 2 + 1];
             
-            const avgSpeed = count > 0 ? (totalSpeedScaled / 10.0) / count : 0;
+            const avgSpeed = count > 0 ? (totalSpeedScaled / 100.0) / count : 0;
             row.push({
               density: count,
               average_speed: avgSpeed
             });
             
-            totalGlobalSpeed += (totalSpeedScaled / 10.0);
+            totalGlobalSpeed += (totalSpeedScaled / 100.0);
             totalGlobalAgents += count;
           }
           grid.push(row);

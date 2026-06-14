@@ -11,7 +11,6 @@ class ConnectionManager:
         self.active_connections: dict[WebSocket, ShachiEnvironment] = {}
 
     async def connect(self, websocket: WebSocket):
-        await websocket.accept()
         self.active_connections[websocket] = ShachiEnvironment()
 
     def disconnect(self, websocket: WebSocket):
@@ -24,14 +23,25 @@ class ConnectionManager:
 manager = ConnectionManager()
 
 @app.websocket("/ws")
-async def websocket_endpoint(websocket: WebSocket, token: str = Query(None)):
+async def websocket_endpoint(websocket: WebSocket):
     expected_token = os.getenv("SIMULATION_TOKEN", "dev_secret_token")
-    if token != expected_token:
-        await websocket.close(code=status.WS_1008_POLICY_VIOLATION)
-        return
-
-    await manager.connect(websocket)
+    
+    await websocket.accept()
+    
     try:
+        auth_data = await websocket.receive_text()
+        try:
+            auth_json = json.loads(auth_data)
+        except json.JSONDecodeError:
+            await websocket.close(code=status.WS_1008_POLICY_VIOLATION)
+            return
+
+        if auth_json.get("auth_token") != expected_token:
+            await websocket.close(code=status.WS_1008_POLICY_VIOLATION)
+            return
+            
+        await manager.connect(websocket)
+        
         while True:
             data = await websocket.receive_text()
             aggregate_stats = json.loads(data)
