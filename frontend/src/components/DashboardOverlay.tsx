@@ -31,12 +31,14 @@ function TelemetryChart() {
             name: 'Actual Speed',
             type: 'line', 
             data: [], 
+            sampling: 'none',
             style: { color: '#00ffcc', lineWidth: 2 } 
           },
           { 
             name: 'Policy Speed',
             type: 'line', 
             data: [], 
+            sampling: 'none',
             style: { color: '#ff0055', lineWidth: 2, lineDash: [5, 5] } 
           }
         ],
