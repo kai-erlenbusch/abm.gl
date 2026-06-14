@@ -29,7 +29,7 @@ export const flockingBehavior = Fn(([positions, velocities, policyMapTexture, ag
     // Phase 5: WebGPU Spatial Grid Aggregation
     // Divide 50x50 world (-25 to 25) into 10x10 grid. Each cell is 5x5.
     const normX = pos.x.add(25.0);
-    const normY = pos.y.add(25.0);
+    const normY = float(25.0).sub(pos.y);
     
     const col = floor(normX.div(5.0));
     const row = floor(normY.div(5.0));

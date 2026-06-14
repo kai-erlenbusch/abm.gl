@@ -33,6 +33,8 @@ function MicroEngine() {
     const data = new Float32Array(100 * 4);
     for (let i = 0; i < 400; i++) data[i] = 0.1;
     const tex = new THREE.DataTexture(data, 10, 10, THREE.RGBAFormat, THREE.FloatType);
+    tex.magFilter = THREE.LinearFilter;
+    tex.minFilter = THREE.LinearFilter;
     tex.needsUpdate = true;
     return tex;
   });
@@ -114,7 +116,8 @@ function MicroEngine() {
       const data = policyTexture.image.data;
       for (let r = 0; r < 10; r++) {
         for (let c = 0; c < 10; c++) {
-          const i = (r * 10 + c) * 4;
+          const texR = 9 - r; // Invert Y for DataTexture (v=0 is bottom)
+          const i = (texR * 10 + c) * 4;
           data[i] = map[r][c]; // R channel
           data[i+1] = 0;
           data[i+2] = 0;
