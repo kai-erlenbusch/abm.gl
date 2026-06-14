@@ -125,9 +125,10 @@ Following the Phase 5 prototype, the simulation underwent a massive architectura
 
 ## GPU Performance Upgrades (Complete)
 - **Parallel Blelloch Scan**: Replaced the $O(N)$ single-threaded prefix sum with a 3-pass Chunked Parallel Blelloch Scan in TSL. Utilizes `workgroupArray` shared memory and `workgroupBarrier()` to achieve work-efficient $O(N)$ compute with $O(\log N)$ step depth, completely unblocking the 1,000,000 agent scale.
+- **Atomic Contention Mitigation**: Solved the L2 cache atomic bottleneck when agents flock densely. Implemented a Workgroup-Local Bitonic Sort and Run-Length Batching strategy using `workgroupArray`. By locally sorting agents in shared memory, we successfully batched contiguous runs and reduced 256 global atomic operations down to a single global atomic per workgroup.
 
 ## GPU Performance Upgrades (Planned)
-- **Atomic Contention Mitigation**: The 100x100 spatial hash currently relies on a naive global `atomicAdd()`, which severely bottlenecks the L2 cache when agents flock densely into a single cell. We plan to implement a Workgroup-Local Bitonic Sort and Run-Length Batching strategy. By locally sorting agents in shared `workgroupArray` memory, we can batch contiguous runs and reduce 256 global atomic operations to a single atomic operation per workgroup.
+- **Dynamic Collision Loop Sizing**: The GPU currently relies on a statically hardcoded 64-iteration loop per neighboring cell to prevent WebGPU TDR crashes. We are replacing this with a safe dynamic `min(count, 256)` bounds loop, which will instantly speed up 90% of sparse cells while strictly preserving TDR safety for singularities.
 
 ---
 
