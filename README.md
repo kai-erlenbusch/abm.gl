@@ -1,4 +1,4 @@
-# abm.gl
+# abm.gl GOALS & ROADMAP
 
 The "Unreal Engine" for complex adaptive systems and Agent-Based Modeling. `abm.gl` is a Hybrid Macro/Micro architecture designed to bypass the traditional Python/JVM bottlenecks by moving massive-scale physics to WebGPU, while retaining Python for cognitive LLM-based agents.
 
