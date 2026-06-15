@@ -2,6 +2,66 @@
 import { useEffect, useRef } from 'react';
 import { ChartGPU } from 'chartgpu';
 import { useSimulationStore } from '@/store/simulationStore';
+import modelSchema from '../config/modelSchema.json';
+
+function SliderWidget({ control }: { control: any }) {
+  const value = useSimulationStore(state => state.dynamicParams[control.id] ?? control.min);
+  const setDynamicParam = useSimulationStore(state => state.setDynamicParam);
+
+  return (
+    <div className="mb-3">
+      <div className="flex justify-between items-center text-xs mb-1 text-neutral-400">
+        <span>{control.label}</span>
+        <input 
+          type="number" 
+          value={value} 
+          min={control.min} 
+          max={control.max} 
+          step={control.step || 1}
+          onChange={(e) => setDynamicParam(control.id, parseFloat(e.target.value) || 0)}
+          className="bg-neutral-800 text-right w-16 px-1 rounded border border-neutral-700 outline-none focus:border-emerald-500"
+        />
+      </div>
+      <input 
+        type="range" 
+        min={control.min} 
+        max={control.max} 
+        step={control.step || 1}
+        value={value}
+        onChange={(e) => setDynamicParam(control.id, parseFloat(e.target.value))}
+        className="w-full h-1 bg-neutral-800 rounded-lg appearance-none cursor-pointer"
+      />
+    </div>
+  );
+}
+
+function ToggleWidget({ control }: { control: any }) {
+  const isPaused = useSimulationStore(state => state.isPaused);
+  const setIsPaused = useSimulationStore(state => state.setIsPaused);
+
+  return (
+    <button 
+      onClick={() => setIsPaused(!isPaused)}
+      className={`flex-1 py-2 rounded-lg text-xs font-bold transition-colors ${
+        isPaused ? 'bg-amber-500/20 text-amber-500 hover:bg-amber-500/30' : 'bg-neutral-800 hover:bg-neutral-700'
+      }`}
+    >
+      {isPaused ? `▶ ${control.label || 'RESUME'}` : `⏸ PAUSE`}
+    </button>
+  );
+}
+
+function SetupButtonWidget({ control }: { control: any }) {
+  const triggerSetup = useSimulationStore(state => state.triggerSetup);
+  return (
+    <button 
+      onClick={() => triggerSetup()}
+      className="flex-1 py-2 rounded-lg text-xs font-bold transition-colors bg-emerald-500/20 text-emerald-400 hover:bg-emerald-500/30 border border-emerald-500/30"
+    >
+      ↺ {control.label || 'SETUP'}
+    </button>
+  );
+}
 
 // Custom wrapper for ChartGPU
 function TelemetryChart() {
@@ -32,6 +92,7 @@ function TelemetryChart() {
             type: 'line', 
             data: [], 
             sampling: 'none',
+            // @ts-ignore
             style: { color: '#00ffcc', lineWidth: 2 } 
           },
           { 
@@ -39,6 +100,7 @@ function TelemetryChart() {
             type: 'line', 
             data: [], 
             sampling: 'none',
+            // @ts-ignore
             style: { color: '#ff0055', lineWidth: 2, lineDash: [5, 5] } 
           }
         ],
@@ -66,24 +128,29 @@ function TelemetryChart() {
       const { timestamp, actual_speed, policy_speed } = e.detail;
       const elapsed = (timestamp - startTime.current) / 1000; // seconds
 
-      // Use ChartGPU's native streaming appendData API
-      if (typeof chartInstanceRef.current.appendData === 'function') {
-        chartInstanceRef.current.appendData(0, [[elapsed, actual_speed]]);
-        chartInstanceRef.current.appendData(1, [[elapsed, policy_speed]]);
-      } else if (typeof chartInstanceRef.current.setOption === 'function') {
-        // Fallback just in case
-        telemetryHistory.current.push([elapsed, actual_speed] as any);
-        policyHistory.current.push([elapsed, policy_speed] as any);
-        if (telemetryHistory.current.length > 200) {
-           telemetryHistory.current.shift();
-           policyHistory.current.shift();
+      // Check pause state directly from the store to avoid stale closure
+      const currentIsPaused = useSimulationStore.getState().isPaused;
+
+      if (!currentIsPaused) {
+        // Use ChartGPU's native streaming appendData API
+        if (typeof chartInstanceRef.current.appendData === 'function') {
+          chartInstanceRef.current.appendData(0, [[elapsed, actual_speed]]);
+          chartInstanceRef.current.appendData(1, [[elapsed, policy_speed]]);
+        } else if (typeof chartInstanceRef.current.setOption === 'function') {
+          // Fallback just in case
+          telemetryHistory.current.push([elapsed, actual_speed] as any);
+          policyHistory.current.push([elapsed, policy_speed] as any);
+          if (telemetryHistory.current.length > 200) {
+             telemetryHistory.current.shift();
+             policyHistory.current.shift();
+          }
+          chartInstanceRef.current.setOption({
+            series: [
+              { type: 'line', data: telemetryHistory.current },
+              { type: 'line', data: policyHistory.current }
+            ]
+          });
         }
-        chartInstanceRef.current.setOption({
-          series: [
-            { type: 'line', data: telemetryHistory.current },
-            { type: 'line', data: policyHistory.current }
-          ]
-        });
       }
     };
 
@@ -115,8 +182,9 @@ function SpatialHeatmap() {
         }
       }
 
-      // Hardcoded max to prevent flickering (e.g. 15,000 agents)
-      const MAX_THEORETICAL = 15000;
+      // Dynamic max to adapt to actual density (so colors are always visible)
+      // Cap minimum at 100 to prevent division by zero or extreme noise
+      const MAX_THEORETICAL = Math.max(100, maxDensity * 1.2, grid[0][0]?.density * 1.5 || 100);
 
       for (let r = 0; r < 10; r++) {
         for (let c = 0; c < 10; c++) {
@@ -124,16 +192,32 @@ function SpatialHeatmap() {
           const cellNode = cellsRef.current[index];
           if (!cellNode) continue;
 
-          const density = grid[r][c].density;
-          const opacity = Math.min(density / MAX_THEORETICAL, 1.0);
-
-          if (density === maxDensity && density > 0) {
-            // Hotspot tinting: Pink/Red
-            cellNode.style.backgroundColor = `rgba(255, 51, 102, ${Math.max(opacity, 0.5)})`;
-          } else {
-            // Base color: Neon Emerald
-            cellNode.style.backgroundColor = `rgba(0, 255, 136, ${opacity})`;
+          const cell = grid[r][c];
+          const count = cell.density;
+          
+          if (count === 0) {
+            cellNode.style.backgroundColor = 'transparent';
+            continue;
           }
+
+          const infected = cell.infected_count;
+          const recovered = cell.recovered_count ?? 0;
+          const susceptible = Math.max(0, count - infected - recovered);
+
+          // Ratios S/I/R
+          const pS = susceptible / count;
+          const pI = infected / count;
+          const pR = recovered / count;
+
+          // RGB blend S=(0, 255, 136) I=(255, 51, 102) R=(0, 128, 255)
+          const rColor = Math.round(pS * 0 + pI * 255 + pR * 0);
+          const gColor = Math.round(pS * 255 + pI * 51 + pR * 128);
+          const bColor = Math.round(pS * 136 + pI * 102 + pR * 255);
+
+          // Overall brightness based on physical density
+          const opacity = Math.min(count / MAX_THEORETICAL, 1.0);
+
+          cellNode.style.backgroundColor = `rgba(${rColor}, ${gColor}, ${bColor}, ${Math.max(opacity, 0.2)})`;
         }
       }
     };
@@ -181,13 +265,27 @@ export default function DashboardOverlay() {
       
       <div className="space-y-4">
         <div className="bg-neutral-900/50 p-4 rounded-lg border border-neutral-800">
-          <div className="flex justify-between text-xs mb-1 text-neutral-400">
-            <span>Agents</span>
-            <span>1,000,000 (WebGPU)</span>
+          {modelSchema.monitors.map((m: any) => (
+            <div key={m.id} className="flex justify-between text-xs mb-1 text-neutral-400">
+              <span>{m.label}</span>
+              <span>{m.value}</span>
+            </div>
+          ))}
+        </div>
+
+        <div className="pt-4 border-t border-neutral-800">
+          <h2 className="text-xs uppercase tracking-widest text-neutral-500 mb-2">Controls</h2>
+          <div className="flex space-x-2 mb-4">
+            {modelSchema.controls.filter((c: any) => c.type === 'button' || c.type === 'toggle').map((c: any) => {
+              if (c.type === 'button') return <SetupButtonWidget key={c.id} control={c} />;
+              if (c.type === 'toggle') return <ToggleWidget key={c.id} control={c} />;
+              return null;
+            })}
           </div>
-          <div className="flex justify-between text-xs text-neutral-400">
-            <span>Macro Engine</span>
-            <span>Shachi (Python LLM)</span>
+          <div className="space-y-2">
+            {modelSchema.controls.filter((c: any) => c.type === 'slider').map((c: any) => (
+              <SliderWidget key={c.id} control={c} />
+            ))}
           </div>
         </div>
 
@@ -199,19 +297,6 @@ export default function DashboardOverlay() {
         <div className="pt-4 border-t border-neutral-800">
           <h2 className="text-xs uppercase tracking-widest text-neutral-500 mb-2">Spatial Density Grid</h2>
           <SpatialHeatmap />
-        </div>
-
-        <div className="pt-4 border-t border-neutral-800 flex space-x-2">
-           <button 
-             onClick={() => {
-               setIsPaused(!isPaused);
-             }}
-             className={`flex-1 py-2 rounded-lg text-xs font-bold transition-colors ${
-               isPaused ? 'bg-amber-500/20 text-amber-500 hover:bg-amber-500/30' : 'bg-neutral-800 hover:bg-neutral-700'
-             }`}
-           >
-             {isPaused ? '▶ RESUME' : '⏸ PAUSE LOCKSTEP'}
-           </button>
         </div>
       </div>
     </div>
