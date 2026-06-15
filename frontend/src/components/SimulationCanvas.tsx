@@ -3,12 +3,12 @@ import { useRef, useMemo, useEffect, useState } from 'react';
 import { Canvas, useFrame } from '@react-three/fiber';
 import * as THREE from 'three';
 // @ts-ignore
-import { WebGPURenderer, StorageInstancedBufferAttribute, StorageBufferAttribute, MeshBasicNodeMaterial } from 'three/webgpu';
+import { WebGPURenderer, StorageInstancedBufferAttribute, StorageBufferAttribute, PointsNodeMaterial } from 'three/webgpu';
 // @ts-ignore
-import { uniform, storage, positionLocal, color, instanceIndex, texture, select, uint, vec3 } from 'three/tsl';
+import { uniform, storage, positionLocal, color, instanceIndex, vertexIndex, texture, select, uint, vec2, vec3 } from 'three/tsl';
 import { useSimulationBridge } from '@/hooks/useSimulationBridge';
 import { useSimulationStore } from '@/store/simulationStore';
-import { flockingBehavior, resetAggregate, spatialResetNode, spatialCountNode, spatialPrefixSum_ChunkNode, spatialPrefixSum_BlockNode, spatialPrefixSum_ScatterNode, spatialScatterNode, spatialCollisionNode, setupEpidemicNode } from './TslPrimitives';
+import { flockingBehavior, resetAggregate, spatialResetNode, spatialCountNode, spatialPrefixSum_ChunkNode, spatialPrefixSum_BlockNode, spatialPrefixSum_ScatterNode, spatialScatterNode, spatialCollisionNode, setupEpidemicNode, telemetryAggregateNode } from './TslPrimitives';
 import DashboardOverlay from './DashboardOverlay';
 
 // The massive scale WebGPU is capable of
@@ -19,10 +19,12 @@ function MicroEngine({ agentCount }: { agentCount: number }) {
   
   const [computeNode, setComputeNode] = useState<any>(null);
   const [resetComputeNode, setResetComputeNode] = useState<any>(null);
+  const [telemetryNode, setTelemetryNode] = useState<any>(null);
   
   const [setupNodePass, setSetupNodePass] = useState<any>(null);
   const needsSetupRef = useRef(true);
   const lastSetupTrigger = useRef(0);
+  const lastFrameDuration = useRef(0);
 
   const dynamicParams = useSimulationStore(state => state.dynamicParams);
   const setupTrigger = useSimulationStore(state => state.setupTrigger);
@@ -92,34 +94,32 @@ function MicroEngine({ agentCount }: { agentCount: number }) {
 
   useEffect(() => {
     // 1. Data Buffers
-    const posArray = new Float32Array(agentCount * 3);
-    const velArray = new Float32Array(agentCount * 3);
+    const posArray = new Float32Array(agentCount * 2);
+    const velArray = new Float32Array(agentCount * 2);
     const infectionArray = new Uint32Array(agentCount);
     for (let i = 0; i < agentCount; i++) {
-      posArray[i * 3] = (Math.random() * 50) - 25;
-      posArray[i * 3 + 1] = (Math.random() * 50) - 25;
-      posArray[i * 3 + 2] = 0;
+      posArray[i * 2] = (Math.random() * 50) - 25;
+      posArray[i * 2 + 1] = (Math.random() * 50) - 25;
       
       const angle = Math.random() * Math.PI * 2;
-      velArray[i * 3] = Math.cos(angle);
-      velArray[i * 3 + 1] = Math.sin(angle);
-      velArray[i * 3 + 2] = 0;
+      velArray[i * 2] = Math.cos(angle);
+      velArray[i * 2 + 1] = Math.sin(angle);
     }
     
-    const posAttr = new StorageInstancedBufferAttribute(posArray, 3);
-    const velAttr = new StorageInstancedBufferAttribute(velArray, 3);
-    const infectionAttr = new StorageInstancedBufferAttribute(infectionArray, 1);
+    const posAttr = new StorageBufferAttribute(posArray, 2);
+    const velAttr = new StorageBufferAttribute(velArray, 2);
+    const infectionAttr = new StorageBufferAttribute(infectionArray, 1);
     
     // Recovery timers
     const timerArray = new Float32Array(agentCount);
-    const timerAttr = new StorageInstancedBufferAttribute(timerArray, 1);
+    const timerAttr = new StorageBufferAttribute(timerArray, 1);
     
     const aggArray = new Uint32Array(400); // 10x10 grid * 4 stats (speed, count, infected, recovered)
     const aggAttr = new StorageBufferAttribute(aggArray, 1);
     setAggregateAttribute(aggAttr);
 
-    const positionsNode = storage(posAttr, 'vec3', agentCount);
-    const velocitiesNode = storage(velAttr, 'vec3', agentCount);
+    const positionsNode = storage(posAttr, 'vec2', agentCount);
+    const velocitiesNode = storage(velAttr, 'vec2', agentCount);
     const infectionNode = storage(infectionAttr, 'uint', agentCount);
     const timerNode = storage(timerAttr, 'float', agentCount);
     const aggregateNode = storage(aggAttr, 'uint', 400).toAtomic();
@@ -130,41 +130,45 @@ function MicroEngine({ agentCount }: { agentCount: number }) {
     setSetupNodePass(setupEpidemicNode(positionsNode, velocitiesNode, infectionNode, timerNode, seedUniform, initialInfectedUniform, recoveryTimeUniform).compute(agentCount));
 
     // @ts-ignore
-    const behaviorNode = flockingBehavior(positionsNode, velocitiesNode, policyMapTextureNode, aggregateNode, infectionNode, timerNode, deltaUniform);
+    const behaviorNode = flockingBehavior(positionsNode, velocitiesNode, policyMapTextureNode, infectionNode, timerNode, deltaUniform);
     setComputeNode(behaviorNode.compute(agentCount));
 
     // @ts-ignore
     const resetNode = resetAggregate(aggregateNode.toAtomic());
     setResetComputeNode(resetNode.compute(400)); // 400 threads for 400 cells
 
+    // @ts-ignore
+    const telNode = telemetryAggregateNode(positionsNode, velocitiesNode, policyMapTextureNode, aggregateNode.toAtomic(), infectionNode);
+    setTelemetryNode(telNode.compute(agentCount));
+
     // 3. Spatial Grid Buffers
-    const cellCountArray = new Uint32Array(160256);
-    const cellOffsetArray = new Uint32Array(160256);
-    const cellOffsetAtomicArray = new Uint32Array(160256);
-    const chunkSumsArray = new Uint32Array(1024); // 160256 / 256 = 626 chunks, 1024 is safe
+    const cellCountArray = new Uint32Array(10240);
+    const cellOffsetArray = new Uint32Array(10240);
+    const cellOffsetAtomicArray = new Uint32Array(10240);
+    const chunkSumsArray = new Uint32Array(40); // 10240 / 256 = 40 chunks
     const sortedAgentArray = new Uint32Array(agentCount);
-    const sortedPosArray = new Float32Array(agentCount * 3);
-    const sortedVelArray = new Float32Array(agentCount * 3);
+    const sortedPosArray = new Float32Array(agentCount * 2);
+    const sortedVelArray = new Float32Array(agentCount * 2);
     
     const countAttr = new StorageBufferAttribute(cellCountArray, 1);
     const offsetAttr = new StorageBufferAttribute(cellOffsetArray, 1);
     const offsetAtomicAttr = new StorageBufferAttribute(cellOffsetAtomicArray, 1);
     const chunkSumsAttr = new StorageBufferAttribute(chunkSumsArray, 1);
     const sortedAttr = new StorageBufferAttribute(sortedAgentArray, 1);
-    const sortedPosAttr = new StorageBufferAttribute(sortedPosArray, 3);
-    const sortedVelAttr = new StorageBufferAttribute(sortedVelArray, 3);
+    const sortedPosAttr = new StorageBufferAttribute(sortedPosArray, 2);
+    const sortedVelAttr = new StorageBufferAttribute(sortedVelArray, 2);
     
-    const countAtomicNode = storage(countAttr, 'uint', 160256).toAtomic();
-    const countNode = storage(countAttr, 'uint', 160256);
-    const offsetNode = storage(offsetAttr, 'uint', 160256);
-    const offsetAtomicNode = storage(offsetAtomicAttr, 'uint', 160256).toAtomic();
-    const chunkSumsNode = storage(chunkSumsAttr, 'uint', 1024);
+    const countAtomicNode = storage(countAttr, 'uint', 10240).toAtomic();
+    const countNode = storage(countAttr, 'uint', 10240);
+    const offsetNode = storage(offsetAttr, 'uint', 10240);
+    const offsetAtomicNode = storage(offsetAtomicAttr, 'uint', 10240).toAtomic();
+    const chunkSumsNode = storage(chunkSumsAttr, 'uint', 40);
     const sortedNode = storage(sortedAttr, 'uint', agentCount);
-    const sortedPosNode = storage(sortedPosAttr, 'vec3', agentCount);
-    const sortedVelNode = storage(sortedVelAttr, 'vec3', agentCount);
+    const sortedPosNode = storage(sortedPosAttr, 'vec2', agentCount);
+    const sortedVelNode = storage(sortedVelAttr, 'vec2', agentCount);
 
     // @ts-ignore
-    setPass0Node(spatialResetNode(countAtomicNode, offsetAtomicNode).compute(160256));
+    setPass0Node(spatialResetNode(countAtomicNode, offsetAtomicNode).compute(10240));
     
     // @ts-ignore
     const pass1 = spatialCountNode(positionsNode, countAtomicNode, uint(agentCount)).compute(agentCount);
@@ -172,7 +176,7 @@ function MicroEngine({ agentCount }: { agentCount: number }) {
     setPass1Node(pass1);
     
     // @ts-ignore
-    const pass2a = spatialPrefixSum_ChunkNode(countNode, offsetNode, chunkSumsNode).compute(160256);
+    const pass2a = spatialPrefixSum_ChunkNode(countNode, offsetNode, chunkSumsNode).compute(10240);
     pass2a.workgroupSize = [256, 1, 1];
     setPass2aNode(pass2a);
     
@@ -181,7 +185,7 @@ function MicroEngine({ agentCount }: { agentCount: number }) {
     setPass2bNode(pass2b);
     
     // @ts-ignore
-    const pass2c = spatialPrefixSum_ScatterNode(offsetNode, offsetAtomicNode, chunkSumsNode).compute(160256);
+    const pass2c = spatialPrefixSum_ScatterNode(offsetNode, offsetAtomicNode, chunkSumsNode).compute(10240);
     pass2c.workgroupSize = [256, 1, 1];
     setPass2cNode(pass2c);
     
@@ -191,10 +195,11 @@ function MicroEngine({ agentCount }: { agentCount: number }) {
     setPass4Node(spatialCollisionNode(positionsNode, velocitiesNode, countNode, offsetNode, sortedNode, sortedPosNode, sortedVelNode, infectionNode, timerNode, infectionRadiusUniform, transmissionProbUniform, recoveryTimeUniform, seedUniform, uint(agentCount)).compute(agentCount));
 
     // 4. WebGPU Material Binding
-    const mat = new MeshBasicNodeMaterial();
-    mat.positionNode = positionLocal.add(positionsNode.element(instanceIndex)); 
+    const mat = new PointsNodeMaterial();
+    mat.size = 2.0;
+    mat.positionNode = positionLocal.add(vec3(positionsNode.element(vertexIndex), 0.0));
     
-    const stateVal = infectionNode.element(instanceIndex);
+    const stateVal = infectionNode.element(vertexIndex);
     mat.colorNode = select(
       stateVal.equal(uint(1)), 
       vec3(1.0, 0.0, 0.0), // Red (Infected)
@@ -242,50 +247,57 @@ function MicroEngine({ agentCount }: { agentCount: number }) {
   }, [currentPolicy, policyTexture]);
 
   useFrame(async (state, delta) => {
-    if (!meshRef.current || !computeNode || !resetComputeNode || !aggregateAttribute) return;
+    if (!meshRef.current || !computeNode || !resetComputeNode || !telemetryNode || !aggregateAttribute) return;
     if (!pass0Node || !pass1Node || !pass2aNode || !pass2bNode || !pass2cNode || !pass3Node || !pass4Node) return;
     
     if (!(state.gl as any).__initialized) return;
+
+    const frameStart = performance.now();
 
     // Dispatch real frame event for FPS meter regardless of pause state
     window.dispatchEvent(new CustomEvent('abm-frame'));
 
     if (needsSetupRef.current && setupNodePass) {
-        await (state.gl as any).computeAsync(setupNodePass);
+        (state.gl as any).compute(setupNodePass);
         needsSetupRef.current = false;
     }
 
     const { isPaused, isMacroThinking, lastLlmSend, setLastLlmSend } = useSimulationStore.getState();
     if (!isPaused && !isMacroThinking) {
         try {
-          await (state.gl as any).computeAsync(pass0Node);
-          await (state.gl as any).computeAsync(pass1Node);
+          (state.gl as any).compute(pass0Node);
+          (state.gl as any).compute(pass1Node);
           
           // Pass 2: 3-Pass Parallel Prefix Sum
-          await (state.gl as any).computeAsync(pass2aNode);
-          await (state.gl as any).computeAsync(pass2bNode);
-          await (state.gl as any).computeAsync(pass2cNode);
+          (state.gl as any).compute(pass2aNode);
+          (state.gl as any).compute(pass2bNode);
+          (state.gl as any).compute(pass2cNode);
           
           // Pass 3: Scatter agents into sorted array
-          await (state.gl as any).computeAsync(pass3Node);
+          (state.gl as any).compute(pass3Node);
           
           // Pass 4: Resolve Collisions & Viral Transmission
-          await (state.gl as any).computeAsync(pass4Node);
+          (state.gl as any).compute(pass4Node);
           
           // Pass 5: Resolve Flocking/Steering Physics
-          await (state.gl as any).computeAsync(resetComputeNode);
-          await (state.gl as any).computeAsync(computeNode);
+          (state.gl as any).compute(computeNode);
         } catch (e) {
           console.warn("Compute pass error:", e);
         }
         
         // CPU Aggregation (Readback API)
         const time = performance.now();
-        if (time - lastReadbackRef.current > 100 && !readbackPendingRef.current) {
+        // Throttle telemetry readback dynamically based on frame drops. If last frame was > 33ms, scale to 500ms
+        const readbackInterval = lastFrameDuration.current > 33 ? 500 : 100;
+        
+        if (time - lastReadbackRef.current > readbackInterval && !readbackPendingRef.current) {
           lastReadbackRef.current = time;
           readbackPendingRef.current = true;
           
           try {
+            (state.gl as any).compute(resetComputeNode);
+            (state.gl as any).compute(telemetryNode);
+
             const buffer = await (state.gl as any).backend.getArrayBufferAsync(aggregateAttribute);
             aggregateDataRef.current.set(new Uint32Array(buffer));
             const aggregateData = aggregateDataRef.current;
@@ -361,14 +373,21 @@ function MicroEngine({ agentCount }: { agentCount: number }) {
           }
         }
     }
+    
+    lastFrameDuration.current = performance.now() - frameStart;
   });
+
+  const dummyPositions = useMemo(() => new Float32Array(agentCount * 3), [agentCount]);
 
   if (!material) return null;
 
   return (
-    <instancedMesh ref={meshRef} args={[undefined, material, agentCount]}>
-      <planeGeometry args={[0.05, 0.05]} />
-    </instancedMesh>
+    <points ref={meshRef as any}>
+      <bufferGeometry>
+        <bufferAttribute attach="attributes-position" args={[dummyPositions, 3]} />
+      </bufferGeometry>
+      <primitive object={material} attach="material" />
+    </points>
   );
 }
 

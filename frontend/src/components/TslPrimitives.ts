@@ -15,7 +15,7 @@ export const pcgHash = Fn(([seed]) => {
  * 1. Flocking Behavior Primitive
  * Calculates separation, alignment, and cohesion entirely on the GPU.
  */
-export const flockingBehavior = Fn(([positions, velocities, policyMapTexture, aggregateBuffer, infectionBuffer, timerBuffer, deltaUniform]) => {
+export const flockingBehavior = Fn(([positions, velocities, policyMapTexture, infectionBuffer, timerBuffer, deltaUniform]) => {
     const i = instanceIndex;
     const pos = positions.element(i);
     const vel = velocities.element(i);
@@ -37,7 +37,32 @@ export const flockingBehavior = Fn(([positions, velocities, policyMapTexture, ag
         vel.y.mulAssign(-1);
     });
 
-    // Phase 5: WebGPU Spatial Grid Aggregation
+    const myInfection = infectionBuffer.element(i);
+    
+    // SIR Recovery Logic (Branchless)
+    const myTimer = timerBuffer.element(i);
+    const isInfectedCond = myInfection.equal(uint(1));
+    
+    myTimer.subAssign(deltaUniform.mul(select(isInfectedCond, float(1.0), float(0.0))));
+    
+    infectionBuffer.element(i).assign(
+        select(
+            isInfectedCond.and(myTimer.lessThanEqual(0.0)),
+            uint(2),
+            myInfection
+        )
+    );
+});
+
+export const telemetryAggregateNode = Fn(([positions, velocities, policyMapTexture, aggregateBuffer, infectionBuffer]) => {
+    const i = instanceIndex;
+    const pos = positions.element(i);
+    const vel = velocities.element(i);
+    
+    const u = clamp(pos.x.add(25.0).div(50.0), 0.0, 1.0);
+    const v = clamp(pos.y.add(25.0).div(50.0), 0.0, 1.0);
+    const speedLocal = texture(policyMapTexture, vec2(u, v)).r;
+
     // Divide 50x50 world (-25 to 25) into 10x10 grid. Each cell is 5x5.
     const normX = pos.x.add(25.0);
     const normY = float(25.0).sub(pos.y);
@@ -45,7 +70,6 @@ export const flockingBehavior = Fn(([positions, velocities, policyMapTexture, ag
     const col = floor(normX.div(5.0));
     const row = floor(normY.div(5.0));
     
-    // Ensure we don't index out of bounds
     const safeCol = clamp(col, 0, 9);
     const safeRow = clamp(row, 0, 9);
     
@@ -56,19 +80,10 @@ export const flockingBehavior = Fn(([positions, velocities, policyMapTexture, ag
     const recoveredIndex = gridIndex.mul(4).add(3);
 
     const speed = length(vel).mul(speedLocal);
+    
     const myInfection = infectionBuffer.element(i);
-    
-    // SIR Recovery Logic
-    If(myInfection.equal(uint(1)), () => {
-        const myTimer = timerBuffer.element(i);
-        myTimer.subAssign(deltaUniform);
-        If(myTimer.lessThanEqual(0.0), () => {
-            infectionBuffer.element(i).assign(uint(2)); // Recovered
-        });
-    });
-    
-    const isInfected = select(infectionBuffer.element(i).equal(uint(1)), uint(1), uint(0));
-    const isRecovered = select(infectionBuffer.element(i).equal(uint(2)), uint(1), uint(0));
+    const isInfected = select(myInfection.equal(uint(1)), uint(1), uint(0));
+    const isRecovered = select(myInfection.equal(uint(2)), uint(1), uint(0));
 
     // Accumulate speed (scaled by 100) and agent counts per cell
     atomicAdd(aggregateBuffer.element(speedIndex), uint(speed.mul(100.0)));
@@ -103,10 +118,10 @@ export const spatialCountNode = Fn(([positions, cellCountBuffer, agentCountLimit
         const normX = pos.x.add(25.0);
         const normY = pos.y.add(25.0);
         
-        // 400x400 grid, cell size 0.125
-        const col = clamp(floor(normX.div(0.125)), 0, 399);
-        const row = clamp(floor(normY.div(0.125)), 0, 399);
-        const gridIndex = row.mul(400).add(col);
+        // 100x100 grid, cell size 0.5
+        const col = clamp(floor(normX.div(0.5)), 0, 99);
+        const row = clamp(floor(normY.div(0.5)), 0, 99);
+        const gridIndex = row.mul(100).add(col);
         
         sharedArray.element(localId).assign(gridIndex);
     }).Else(() => {
@@ -142,7 +157,7 @@ export const spatialCountNode = Fn(([positions, cellCountBuffer, agentCountLimit
         const currentGridIndex = sharedArray.element(localId);
         
         // Only valid grid indices
-        If(currentGridIndex.lessThan(160000), () => {
+        If(currentGridIndex.lessThan(10000), () => {
             const runLength = uint(1).toVar();
             
             // Forward scan divergence trap (accepted as MVP)
@@ -177,7 +192,7 @@ export const spatialPrefixSum_ChunkNode = Fn(([cellCountBuffer, cellOffsetBuffer
     const sharedArray = workgroupArray('uint', 256);
     
     // Load data into shared memory
-    const count = select(globalId.lessThan(160256), uint(cellCountBuffer.element(globalId)), uint(0));
+    const count = select(globalId.lessThan(10240), uint(cellCountBuffer.element(globalId)), uint(0));
     sharedArray.element(localId).assign(count);
     workgroupBarrier();
     
@@ -193,7 +208,7 @@ export const spatialPrefixSum_ChunkNode = Fn(([cellCountBuffer, cellOffsetBuffer
     // Clear the last element for Down-Sweep
     If(localId.equal(255), () => {
         // Save the total chunk sum
-        If(groupId.lessThan(1024), () => {
+        If(groupId.lessThan(40), () => {
             chunkSumsBuffer.element(groupId).assign(sharedArray.element(uint(255)));
         });
         sharedArray.element(uint(255)).assign(uint(0));
@@ -212,7 +227,7 @@ export const spatialPrefixSum_ChunkNode = Fn(([cellCountBuffer, cellOffsetBuffer
     }
     
     // Write out the exclusive prefix sum for this chunk
-    If(globalId.lessThan(160256), () => {
+    If(globalId.lessThan(10240), () => {
         cellOffsetBuffer.element(globalId).assign(sharedArray.element(localId));
     });
 });
@@ -222,7 +237,7 @@ export const spatialPrefixSum_BlockNode = Fn(([chunkSumsBuffer]: any) => {
     const i = instanceIndex;
     If(i.equal(uint(0)), () => {
         const sum = uint(0).toVar();
-        Loop(1024, ({ i: j }) => {
+        Loop(40, ({ i: j }) => {
             const jUint = uint(j);
             const count = uint(chunkSumsBuffer.element(jUint));
             chunkSumsBuffer.element(jUint).assign(sum);
@@ -236,7 +251,7 @@ export const spatialPrefixSum_ScatterNode = Fn(([cellOffsetBuffer, cellOffsetAto
     const globalId = instanceIndex;
     const groupId = workgroupId.x;
     
-    If(globalId.lessThan(160256), () => {
+    If(globalId.lessThan(10240), () => {
         const blockOffset = chunkSumsBuffer.element(groupId);
         const finalOffset = cellOffsetBuffer.element(globalId).add(blockOffset);
         cellOffsetBuffer.element(globalId).assign(finalOffset);
@@ -253,10 +268,10 @@ export const spatialScatterNode = Fn(([positions, velocities, cellOffsetAtomicBu
         const normX = pos.x.add(25.0);
         const normY = pos.y.add(25.0);
         
-        // 400x400 grid, cell size 0.125
-        const col = clamp(floor(normX.div(0.125)), 0, 399);
-        const row = clamp(floor(normY.div(0.125)), 0, 399);
-        const gridIndex = row.mul(400).add(col);
+        // 100x100 grid, cell size 0.5
+        const col = clamp(floor(normX.div(0.5)), 0, 99);
+        const row = clamp(floor(normY.div(0.5)), 0, 99);
+        const gridIndex = row.mul(100).add(col);
         
         const slot = atomicAdd(cellOffsetAtomicBuffer.element(gridIndex), uint(1));
         sortedAgentIndicesBuffer.element(slot).assign(i);
@@ -276,18 +291,18 @@ export const spatialCollisionNode = Fn(([positions, velocities, cellCountBuffer,
         const normX = pos.x.add(25.0);
         const normY = pos.y.add(25.0);
     
-    // 400x400 grid, cell size 0.125
-    const col = uint(clamp(floor(normX.div(0.125)), 0, 399));
-    const row = uint(clamp(floor(normY.div(0.125)), 0, 399));
+    // 100x100 grid, cell size 0.5
+    const col = uint(clamp(floor(normX.div(0.5)), 0, 99));
+    const row = uint(clamp(floor(normY.div(0.5)), 0, 99));
     
-    const separation = vec3(0, 0, 0).toVar();
+    const separation = vec2(0, 0).toVar();
     const neighborsCount = uint(0).toVar();
     
     // Dynamic search bounds based on infection radius.
-    // Cell size is 0.125 units.
-    const searchRadius = int(ceil(infectionRadius.div(0.125)));
-    // Guarantee at least enough span for 0.5 physical separation (ceil(0.5 / 0.125) = 4)
-    const effectiveSearchRadius = max(4, searchRadius);
+    // Cell size is 0.5 units.
+    const searchRadius = int(ceil(infectionRadius.div(0.5)));
+    // Guarantee at least enough span for 0.5 physical separation (ceil(0.5 / 0.5) = 1)
+    const effectiveSearchRadius = max(1, searchRadius);
     const gridSpan = effectiveSearchRadius.mul(2).add(1);
     
     Loop(gridSpan, ({ i: rIndex }) => {
@@ -295,16 +310,16 @@ export const spatialCollisionNode = Fn(([positions, velocities, cellCountBuffer,
             const rOffset = int(rIndex).sub(effectiveSearchRadius);
             const cOffset = int(cIndex).sub(effectiveSearchRadius);
             
-            const neighborCol = uint(clamp(int(col).add(cOffset), 0, 399));
-            const neighborRow = uint(clamp(int(row).add(rOffset), 0, 399));
-            const neighborGridIndex = neighborRow.mul(uint(400)).add(neighborCol);
+            const neighborCol = uint(clamp(int(col).add(cOffset), 0, 99));
+            const neighborRow = uint(clamp(int(row).add(rOffset), 0, 99));
+            const neighborGridIndex = neighborRow.mul(uint(100)).add(neighborCol);
             
             const startIdx = cellOffsetBuffer.element(neighborGridIndex);
             const count = uint(cellCountBuffer.element(neighborGridIndex));
             
-            // Uniform Strided Sampling: Strictly cap ALU at O(8) per cell (72 total per agent)
-            const stride = max(uint(1), count.div(uint(8)));
-            const loopCap = min(count, uint(8));
+            // Uniform Strided Sampling: Cap ALU per cell (32 per cell max)
+            const stride = max(uint(1), count.div(uint(32)));
+            const loopCap = min(count, uint(32));
             
             Loop(loopCap, ({ i: j }) => {
                 const jUint = uint(j);
@@ -378,11 +393,9 @@ export const setupEpidemicNode = Fn(([positions, velocities, infectionBuffer, ti
     // Place randomly across the whole board
     pos.x.assign(r1.sub(0.5).mul(50.0));
     pos.y.assign(r2.sub(0.5).mul(50.0));
-    pos.z.assign(0.0);
 
     vel.x.assign(r3.sub(0.5).mul(2.0));
     vel.y.assign(r4.sub(0.5).mul(2.0));
-    vel.z.assign(0.0);
 
     // Phase 8: Ground Zero Seeding
     const dist = length(pos);
