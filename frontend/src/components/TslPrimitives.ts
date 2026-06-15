@@ -194,9 +194,9 @@ export const spatialPrefixSum_ChunkNode = Fn(([cellCountBuffer, cellOffsetBuffer
     If(localId.equal(255), () => {
         // Save the total chunk sum
         If(groupId.lessThan(64), () => {
-            chunkSumsBuffer.element(groupId).assign(sharedArray.element(255));
+            chunkSumsBuffer.element(groupId).assign(sharedArray.element(uint(255)));
         });
-        sharedArray.element(255).assign(uint(0));
+        sharedArray.element(uint(255)).assign(uint(0));
     });
     workgroupBarrier();
     

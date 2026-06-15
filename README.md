@@ -126,9 +126,8 @@ Following the Phase 5 prototype, the simulation underwent a massive architectura
 ## GPU Performance Upgrades (Complete)
 - **Parallel Blelloch Scan**: Replaced the $O(N)$ single-threaded prefix sum with a 3-pass Chunked Parallel Blelloch Scan in TSL. Utilizes `workgroupArray` shared memory and `workgroupBarrier()` to achieve work-efficient $O(N)$ compute with $O(\log N)$ step depth, completely unblocking the 1,000,000 agent scale.
 - **Atomic Contention Mitigation**: Solved the L2 cache atomic bottleneck when agents flock densely. Implemented a Workgroup-Local Bitonic Sort and Run-Length Batching strategy using `workgroupArray`. By locally sorting agents in shared memory, we successfully batched contiguous runs and reduced 256 global atomic operations down to a single global atomic per workgroup.
-
-## GPU Performance Upgrades (Planned)
-- **Dynamic Collision Loop Sizing**: The GPU currently relies on a statically hardcoded 64-iteration loop per neighboring cell to prevent WebGPU TDR crashes. We are replacing this with a safe dynamic `min(count, 256)` bounds loop, which will instantly speed up 90% of sparse cells while strictly preserving TDR safety for singularities.
+- **Dynamic Collision Loop Sizing**: Replaced the statically hardcoded 64-iteration neighbor loop with dynamic search radius loop bounds and the native TSL `Loop` primitive. This instantly speeds up sparse cells while enforcing a hard 1024-neighbor cap to strictly preserve GPU TDR safety during dense singularities.
+- **Robust PRNG (PCG Hash)**: Replaced flawed sine-wave based pseudo-randomness with a GPU-optimized PCG Hash function. This successfully solved strange macroscopic grid artifacts (vertical/horizontal flocking alignment) and eliminated float32 precision loss across 1,000,000+ parallel threads.
 
 ---
 
@@ -148,11 +147,12 @@ Phase 7 transforms the particle system into a true Agent-Based Model by implemen
 
 ---
 
-## Phase 8: Adaptive NetLogo UI & Ground Zero (In Progress)
+## Phase 8: Adaptive NetLogo UI & Ground Zero (Complete)
 Phase 8 transforms the hardcoded Next.js overlay into a generalized, dynamic Agent-Based Modeling platform mimicking the classic NetLogo UI.
-- **JSON Declarative UI**: A central `modelSchema.json` completely dictates the left-hand sidebar, mapping configuration (sliders, buttons, switches) directly to a dynamic React renderer.
+- **JSON Declarative UI**: A central `modelSchema.json` completely dictates the left-hand sidebar, mapping configuration (sliders, buttons, text fields) directly to a dynamic React renderer.
 - **Zustand-to-WebGPU Pipeline**: TSL `uniform` nodes are bound directly to Zustand store state, allowing React UI sliders to interactively manipulate the 1,000,000-agent GPU compute physics with zero performance overhead.
 - **Setup & Ground Zero**: The classic ABM "Setup" button is wired to a dedicated WebGPU compute pass that resets positions and intelligently seeds a centralized "Ground Zero" viral cluster, allowing researchers to watch the macro spread dynamically.
+- **Dynamic WebGPU Allocation**: The Agent Count is fully decoupled from static constants. Modifying the `agent_count` text field gracefully unmounts the simulation and dynamically re-allocates all `StorageInstancedBufferAttribute` memory arrays instantly, allowing safe scaling from 1 to 1,000,000 agents directly from the UI.
 
 ---
 

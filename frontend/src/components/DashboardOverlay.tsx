@@ -35,6 +35,33 @@ function SliderWidget({ control }: { control: any }) {
   );
 }
 
+function NumberWidget({ control }: { control: any }) {
+  const value = useSimulationStore(state => state.dynamicParams[control.id] ?? control.default ?? 100000);
+  const setDynamicParam = useSimulationStore(state => state.setDynamicParam);
+
+  return (
+    <div className="mb-3">
+      <div className="flex justify-between items-center text-xs mb-1 text-neutral-400">
+        <span>{control.label}</span>
+        <input 
+          type="number" 
+          value={value} 
+          min={control.min} 
+          max={control.max} 
+          step={control.step || 1}
+          onChange={(e) => {
+            const val = parseFloat(e.target.value);
+            if (!isNaN(val)) {
+               setDynamicParam(control.id, Math.max(control.min, Math.min(control.max, val)));
+            }
+          }}
+          className="bg-neutral-800 text-right w-24 px-2 py-1 rounded border border-neutral-700 outline-none focus:border-emerald-500"
+        />
+      </div>
+    </div>
+  );
+}
+
 function ToggleWidget({ control }: { control: any }) {
   const isPaused = useSimulationStore(state => state.isPaused);
   const setIsPaused = useSimulationStore(state => state.setIsPaused);
@@ -263,18 +290,6 @@ export default function DashboardOverlay() {
         </div>
       </div>
       
-      {/* Meta details */}
-      <div className="bg-neutral-900 border border-neutral-800 rounded-lg p-3 text-xs text-neutral-400 space-y-2 mb-6">
-        <div className="flex justify-between">
-          <span>Agents</span>
-          <span className="text-white">100,000 (WebGPU)</span>
-        </div>
-        <div className="flex justify-between">
-          <span>Macro Engine</span>
-          <span className="text-white">Shachi (Python LLM)</span>
-        </div>
-      </div>
-
       <div className="space-y-4">
         <div className="bg-neutral-900/50 p-4 rounded-lg border border-neutral-800">
           {modelSchema.monitors.map((m: any) => (
@@ -295,9 +310,11 @@ export default function DashboardOverlay() {
             })}
           </div>
           <div className="space-y-2">
-            {modelSchema.controls.filter((c: any) => c.type === 'slider').map((c: any) => (
-              <SliderWidget key={c.id} control={c} />
-            ))}
+            {modelSchema.controls.filter((c: any) => c.type === 'slider' || c.type === 'number').map((c: any) => {
+              if (c.type === 'slider') return <SliderWidget key={c.id} control={c} />;
+              if (c.type === 'number') return <NumberWidget key={c.id} control={c} />;
+              return null;
+            })}
           </div>
         </div>
 

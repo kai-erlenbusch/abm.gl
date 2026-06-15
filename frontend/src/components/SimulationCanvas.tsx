@@ -8,13 +8,12 @@ import { WebGPURenderer, StorageInstancedBufferAttribute, StorageBufferAttribute
 import { uniform, storage, positionLocal, color, instanceIndex, texture, select, uint, vec3 } from 'three/tsl';
 import { useSimulationBridge } from '@/hooks/useSimulationBridge';
 import { useSimulationStore } from '@/store/simulationStore';
-import { flockingBehavior, resetAggregate, spatialResetNode, spatialCountNode, spatialPrefixSum_SequentialNode, spatialScatterNode, spatialCollisionNode, setupEpidemicNode } from './TslPrimitives';
+import { flockingBehavior, resetAggregate, spatialResetNode, spatialCountNode, spatialPrefixSum_ChunkNode, spatialPrefixSum_BlockNode, spatialPrefixSum_ScatterNode, spatialScatterNode, spatialCollisionNode, setupEpidemicNode } from './TslPrimitives';
 import DashboardOverlay from './DashboardOverlay';
 
 // The massive scale WebGPU is capable of
-const AGENT_COUNT = 100000;
 
-function MicroEngine() {
+function MicroEngine({ agentCount }: { agentCount: number }) {
   const meshRef = useRef<THREE.InstancedMesh>(null);
   const { currentPolicy, sendAggregateStats } = useSimulationBridge();
   
@@ -41,10 +40,10 @@ function MicroEngine() {
     recoveryTimeUniform.value = (dynamicParams.recovery_time ?? 60.0) * 60.0; // Assuming 60 fps frames
     
     // Convert N initial agents into a physical radius 
-    // Area = 50x50 = 2500. Density = AGENT_COUNT / 2500.
+    // Area = 50x50 = 2500. Density = agentCount / 2500.
     // N = pi * r^2 * density => r = sqrt(N / (density * pi))
     const n = dynamicParams.initial_infected ?? 100;
-    const density = AGENT_COUNT / 2500.0;
+    const density = agentCount / 2500.0;
     initialInfectedUniform.value = Math.sqrt(n / (density * Math.PI));
   }, [dynamicParams, infectionRadiusUniform, initialInfectedUniform, transmissionProbUniform, recoveryTimeUniform]);
 
@@ -81,10 +80,10 @@ function MicroEngine() {
 
   useEffect(() => {
     // 1. Data Buffers
-    const posArray = new Float32Array(AGENT_COUNT * 3);
-    const velArray = new Float32Array(AGENT_COUNT * 3);
-    const infectionArray = new Uint32Array(AGENT_COUNT);
-    for (let i = 0; i < AGENT_COUNT; i++) {
+    const posArray = new Float32Array(agentCount * 3);
+    const velArray = new Float32Array(agentCount * 3);
+    const infectionArray = new Uint32Array(agentCount);
+    for (let i = 0; i < agentCount; i++) {
       posArray[i * 3] = (Math.random() * 50) - 25;
       posArray[i * 3 + 1] = (Math.random() * 50) - 25;
       posArray[i * 3 + 2] = 0;
@@ -100,27 +99,27 @@ function MicroEngine() {
     const infectionAttr = new StorageInstancedBufferAttribute(infectionArray, 1);
     
     // Recovery timers
-    const timerArray = new Float32Array(AGENT_COUNT);
+    const timerArray = new Float32Array(agentCount);
     const timerAttr = new StorageInstancedBufferAttribute(timerArray, 1);
     
     const aggArray = new Uint32Array(400); // 10x10 grid * 4 stats (speed, count, infected, recovered)
     const aggAttr = new StorageBufferAttribute(aggArray, 1);
     setAggregateAttribute(aggAttr);
 
-    const positionsNode = storage(posAttr, 'vec3', AGENT_COUNT);
-    const velocitiesNode = storage(velAttr, 'vec3', AGENT_COUNT);
-    const infectionNode = storage(infectionAttr, 'uint', AGENT_COUNT);
-    const timerNode = storage(timerAttr, 'float', AGENT_COUNT);
+    const positionsNode = storage(posAttr, 'vec3', agentCount);
+    const velocitiesNode = storage(velAttr, 'vec3', agentCount);
+    const infectionNode = storage(infectionAttr, 'uint', agentCount);
+    const timerNode = storage(timerAttr, 'float', agentCount);
     const aggregateNode = storage(aggAttr, 'uint', 400).toAtomic();
     const policyMapTextureNode = texture(policyTexture);
     
     // 2. TSL ComputeNode Implementation
     // @ts-ignore
-    setSetupNodePass(setupEpidemicNode(positionsNode, velocitiesNode, infectionNode, timerNode, seedUniform, initialInfectedUniform, recoveryTimeUniform).compute(AGENT_COUNT));
+    setSetupNodePass(setupEpidemicNode(positionsNode, velocitiesNode, infectionNode, timerNode, seedUniform, initialInfectedUniform, recoveryTimeUniform).compute(agentCount));
 
     // @ts-ignore
     const behaviorNode = flockingBehavior(positionsNode, velocitiesNode, policyMapTextureNode, aggregateNode, infectionNode, timerNode, deltaUniform);
-    setComputeNode(behaviorNode.compute(AGENT_COUNT));
+    setComputeNode(behaviorNode.compute(agentCount));
 
     // @ts-ignore
     const resetNode = resetAggregate(aggregateNode.toAtomic());
@@ -131,7 +130,7 @@ function MicroEngine() {
     const cellOffsetArray = new Uint32Array(10240);
     const cellOffsetAtomicArray = new Uint32Array(10240);
     const chunkSumsArray = new Uint32Array(64); // 10240 / 256 = 40 chunks, 64 is safe
-    const sortedAgentArray = new Uint32Array(AGENT_COUNT);
+    const sortedAgentArray = new Uint32Array(agentCount);
     
     const countAttr = new StorageBufferAttribute(cellCountArray, 1);
     const offsetAttr = new StorageBufferAttribute(cellOffsetArray, 1);
@@ -144,7 +143,7 @@ function MicroEngine() {
     const offsetNode = storage(offsetAttr, 'uint', 10240);
     const offsetAtomicNode = storage(offsetAtomicAttr, 'uint', 10240).toAtomic();
     const chunkSumsNode = storage(chunkSumsAttr, 'uint', 64);
-    const sortedNode = storage(sortedAttr, 'uint', AGENT_COUNT);
+    const sortedNode = storage(sortedAttr, 'uint', agentCount);
 
     // @ts-ignore
     setPass0Node(spatialResetNode(countAtomicNode, offsetAtomicNode).compute(10240));
@@ -169,9 +168,9 @@ function MicroEngine() {
     setPass2cNode(pass2c);
     
     // @ts-ignore
-    setPass3Node(spatialScatterNode(positionsNode, offsetAtomicNode, sortedNode).compute(AGENT_COUNT));
+    setPass3Node(spatialScatterNode(positionsNode, offsetAtomicNode, sortedNode).compute(agentCount));
     // @ts-ignore
-    setPass4Node(spatialCollisionNode(positionsNode, velocitiesNode, countNode, offsetNode, sortedNode, infectionNode, timerNode, infectionRadiusUniform, transmissionProbUniform, recoveryTimeUniform, seedUniform).compute(AGENT_COUNT));
+    setPass4Node(spatialCollisionNode(positionsNode, velocitiesNode, countNode, offsetNode, sortedNode, infectionNode, timerNode, infectionRadiusUniform, transmissionProbUniform, recoveryTimeUniform, seedUniform).compute(agentCount));
 
     // 4. WebGPU Material Binding
     const mat = new MeshBasicNodeMaterial();
@@ -339,13 +338,16 @@ function MicroEngine() {
   if (!material) return null;
 
   return (
-    <instancedMesh ref={meshRef} args={[undefined, material, AGENT_COUNT]}>
+    <instancedMesh ref={meshRef} args={[undefined, material, agentCount]}>
       <planeGeometry args={[0.05, 0.05]} />
     </instancedMesh>
   );
 }
 
 export default function SimulationCanvas() {
+  const dynamicParams = useSimulationStore(state => state.dynamicParams);
+  const agentCount = dynamicParams.agent_count ?? 100000;
+
   return (
     <div className="w-full h-screen bg-neutral-950 relative">
       <DashboardOverlay />
@@ -371,7 +373,8 @@ export default function SimulationCanvas() {
         }} 
         camera={{ position: [0, 0, 50], fov: 75 }}
       >
-        <MicroEngine />
+        <MicroEngine key={`agent-count-${agentCount}`} agentCount={agentCount} />
+        <ambientLight intensity={0.5} />
       </Canvas>
     </div>
   );
