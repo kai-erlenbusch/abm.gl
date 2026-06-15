@@ -1,7 +1,7 @@
 import asyncio
 import os
 import json
-from pydantic import BaseModel
+from pydantic import BaseModel, ValidationError
 from dotenv import load_dotenv
 from litellm import acompletion
 from tenacity import retry, stop_after_attempt, wait_exponential
@@ -63,6 +63,9 @@ class ShachiEnvironment:
     async def safe_get_advisor_proposal(self, role: str, prompt: str) -> AdvisorResponse | None:
         try:
             return await self.get_advisor_proposal(role, prompt)
+        except ValidationError as e:
+            print(f"[{role}] Pydantic validation failed: {e}")
+            return None
         except Exception as e:
             print(f"[{role}] Failed after retries: {e}")
             return None
@@ -206,6 +209,14 @@ class ShachiEnvironment:
                 message=llm_policy.message
             )
             
+        except ValidationError as e:
+            print(f"[Shachi Env] Pydantic validation failed during Mayor inference: {e}")
+            speed_map = [[0.1 for _ in range(10)] for _ in range(10)]
+            return FrontendPolicyPayload(
+                infection_radius=10.0,
+                policy_speed_map=speed_map,
+                message=f"Validation Error: {str(e)}"
+            )
         except Exception as e:
             print(f"[Shachi Env] Error during Mayor inference: {e}")
             speed_map = [[0.1 for _ in range(10)] for _ in range(10)]

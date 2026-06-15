@@ -1,8 +1,8 @@
 import { 
     Fn, float, vec3, abs, If, Loop, instanceIndex, uint, int,
-    atomicAdd, atomicLoad, atomicStore, min,
+    atomicAdd, atomicLoad, atomicStore, min, max,
     workgroupBarrier, workgroupId, workgroupArray, clamp, floor, ceil,
-    fract, sin, length, texture, vec2, Break, invocationLocalIndex, mod, select
+    fract, sin, length, texture, vec2, Break, invocationLocalIndex, mod, select, sqrt
 } from 'three/tsl';
 
 export const pcgHash = Fn(([seed]) => {
@@ -90,7 +90,7 @@ export const spatialResetNode = Fn(([cellCountBuffer, cellOffsetAtomicBuffer]) =
     atomicStore(cellOffsetAtomicBuffer.element(i), uint(0));
 });
 
-export const spatialCountNode = Fn(([positions, cellCountBuffer]) => {
+export const spatialCountNode = Fn(([positions, cellCountBuffer, agentCountLimit]: any) => {
     // Pad to multiple of 256
     const i = instanceIndex;
     const localId = invocationLocalIndex;
@@ -98,20 +98,20 @@ export const spatialCountNode = Fn(([positions, cellCountBuffer]) => {
     const sharedArray = workgroupArray('uint', 256);
     
     // Bounds check for padding
-    If(i.lessThan(100000), () => {
+    If(i.lessThan(agentCountLimit), () => {
         const pos = positions.element(i);
         const normX = pos.x.add(25.0);
         const normY = pos.y.add(25.0);
         
-        // 100x100 grid, cell size 0.5
-        const col = clamp(floor(normX.div(0.5)), 0, 99);
-        const row = clamp(floor(normY.div(0.5)), 0, 99);
-        const gridIndex = row.mul(100).add(col);
+        // 400x400 grid, cell size 0.125
+        const col = clamp(floor(normX.div(0.125)), 0, 399);
+        const row = clamp(floor(normY.div(0.125)), 0, 399);
+        const gridIndex = row.mul(400).add(col);
         
         sharedArray.element(localId).assign(gridIndex);
     }).Else(() => {
         // Out-of-bounds padding agents placed at the very end
-        sharedArray.element(localId).assign(999999);
+        sharedArray.element(localId).assign(9999999);
     });
     
     workgroupBarrier();
@@ -142,7 +142,7 @@ export const spatialCountNode = Fn(([positions, cellCountBuffer]) => {
         const currentGridIndex = sharedArray.element(localId);
         
         // Only valid grid indices
-        If(currentGridIndex.lessThan(10000), () => {
+        If(currentGridIndex.lessThan(160000), () => {
             const runLength = uint(1).toVar();
             
             // Forward scan divergence trap (accepted as MVP)
@@ -177,7 +177,7 @@ export const spatialPrefixSum_ChunkNode = Fn(([cellCountBuffer, cellOffsetBuffer
     const sharedArray = workgroupArray('uint', 256);
     
     // Load data into shared memory
-    const count = select(globalId.lessThan(10240), uint(cellCountBuffer.element(globalId)), uint(0));
+    const count = select(globalId.lessThan(160256), uint(cellCountBuffer.element(globalId)), uint(0));
     sharedArray.element(localId).assign(count);
     workgroupBarrier();
     
@@ -193,7 +193,7 @@ export const spatialPrefixSum_ChunkNode = Fn(([cellCountBuffer, cellOffsetBuffer
     // Clear the last element for Down-Sweep
     If(localId.equal(255), () => {
         // Save the total chunk sum
-        If(groupId.lessThan(64), () => {
+        If(groupId.lessThan(1024), () => {
             chunkSumsBuffer.element(groupId).assign(sharedArray.element(uint(255)));
         });
         sharedArray.element(uint(255)).assign(uint(0));
@@ -212,7 +212,7 @@ export const spatialPrefixSum_ChunkNode = Fn(([cellCountBuffer, cellOffsetBuffer
     }
     
     // Write out the exclusive prefix sum for this chunk
-    If(globalId.lessThan(10240), () => {
+    If(globalId.lessThan(160256), () => {
         cellOffsetBuffer.element(globalId).assign(sharedArray.element(localId));
     });
 });
@@ -222,7 +222,7 @@ export const spatialPrefixSum_BlockNode = Fn(([chunkSumsBuffer]: any) => {
     const i = instanceIndex;
     If(i.equal(uint(0)), () => {
         const sum = uint(0).toVar();
-        Loop(64, ({ i: j }) => {
+        Loop(1024, ({ i: j }) => {
             const jUint = uint(j);
             const count = uint(chunkSumsBuffer.element(jUint));
             chunkSumsBuffer.element(jUint).assign(sum);
@@ -236,7 +236,7 @@ export const spatialPrefixSum_ScatterNode = Fn(([cellOffsetBuffer, cellOffsetAto
     const globalId = instanceIndex;
     const groupId = workgroupId.x;
     
-    If(globalId.lessThan(10240), () => {
+    If(globalId.lessThan(160256), () => {
         const blockOffset = chunkSumsBuffer.element(groupId);
         const finalOffset = cellOffsetBuffer.element(globalId).add(blockOffset);
         cellOffsetBuffer.element(globalId).assign(finalOffset);
@@ -244,81 +244,94 @@ export const spatialPrefixSum_ScatterNode = Fn(([cellOffsetBuffer, cellOffsetAto
     });
 });
 
-export const spatialScatterNode = Fn(([positions, cellOffsetAtomicBuffer, sortedAgentIndicesBuffer]) => {
+export const spatialScatterNode = Fn(([positions, velocities, cellOffsetAtomicBuffer, sortedAgentIndicesBuffer, sortedPositionsBuffer, sortedVelocitiesBuffer, agentCountLimit]: any) => {
     // 1M threads
     const i = instanceIndex;
-    const pos = positions.element(i);
-    const normX = pos.x.add(25.0);
-    const normY = pos.y.add(25.0);
-    
-    // 100x100 grid, cell size 0.5
-    const col = clamp(floor(normX.div(0.5)), 0, 99);
-    const row = clamp(floor(normY.div(0.5)), 0, 99);
-    const gridIndex = row.mul(100).add(col);
-    
-    const slot = atomicAdd(cellOffsetAtomicBuffer.element(gridIndex), uint(1));
-    sortedAgentIndicesBuffer.element(slot).assign(i);
+    If(i.lessThan(agentCountLimit), () => {
+        const pos = positions.element(i);
+        const vel = velocities.element(i);
+        const normX = pos.x.add(25.0);
+        const normY = pos.y.add(25.0);
+        
+        // 400x400 grid, cell size 0.125
+        const col = clamp(floor(normX.div(0.125)), 0, 399);
+        const row = clamp(floor(normY.div(0.125)), 0, 399);
+        const gridIndex = row.mul(400).add(col);
+        
+        const slot = atomicAdd(cellOffsetAtomicBuffer.element(gridIndex), uint(1));
+        sortedAgentIndicesBuffer.element(slot).assign(i);
+        sortedPositionsBuffer.element(slot).assign(pos);
+        sortedVelocitiesBuffer.element(slot).assign(vel);
+    });
 });
 
-export const spatialCollisionNode = Fn(([positions, velocities, cellCountBuffer, cellOffsetBuffer, sortedAgentIndicesBuffer, infectionBuffer, timerBuffer, infectionRadius, transmissionProb, recoveryTime, seedUniform]: any) => {
+export const spatialCollisionNode = Fn(([positions, velocities, cellCountBuffer, cellOffsetBuffer, sortedAgentIndicesBuffer, sortedPositionsBuffer, sortedVelocitiesBuffer, infectionBuffer, timerBuffer, infectionRadius, transmissionProb, recoveryTime, seedUniform, agentCountLimit]: any) => {
     // 1M threads
     const i = instanceIndex;
-    const pos = positions.element(i);
-    const vel = velocities.element(i);
-    const myInfection = infectionBuffer.element(i);
+    If(i.lessThan(agentCountLimit), () => {
+        const pos = positions.element(i);
+        const vel = velocities.element(i);
+        const myInfection = infectionBuffer.element(i);
+        
+        const normX = pos.x.add(25.0);
+        const normY = pos.y.add(25.0);
     
-    const normX = pos.x.add(25.0);
-    const normY = pos.y.add(25.0);
-    
-    // 100x100 grid, cell size 0.5
-    const col = uint(clamp(floor(normX.div(0.5)), 0, 99));
-    const row = uint(clamp(floor(normY.div(0.5)), 0, 99));
+    // 400x400 grid, cell size 0.125
+    const col = uint(clamp(floor(normX.div(0.125)), 0, 399));
+    const row = uint(clamp(floor(normY.div(0.125)), 0, 399));
     
     const separation = vec3(0, 0, 0).toVar();
     const neighborsCount = uint(0).toVar();
     
     // Dynamic search bounds based on infection radius.
-    // Cell size is 0.5 units.
-    const searchRadius = int(ceil(infectionRadius.div(0.5)));
-    const gridSpan = searchRadius.mul(2).add(1);
+    // Cell size is 0.125 units.
+    const searchRadius = int(ceil(infectionRadius.div(0.125)));
+    // Guarantee at least enough span for 0.5 physical separation (ceil(0.5 / 0.125) = 4)
+    const effectiveSearchRadius = max(4, searchRadius);
+    const gridSpan = effectiveSearchRadius.mul(2).add(1);
     
     Loop(gridSpan, ({ i: rIndex }) => {
         Loop(gridSpan, ({ i: cIndex }) => {
-            const rOffset = int(rIndex).sub(searchRadius);
-            const cOffset = int(cIndex).sub(searchRadius);
+            const rOffset = int(rIndex).sub(effectiveSearchRadius);
+            const cOffset = int(cIndex).sub(effectiveSearchRadius);
             
-            const neighborCol = uint(clamp(int(col).add(cOffset), 0, 99));
-            const neighborRow = uint(clamp(int(row).add(rOffset), 0, 99));
-            const neighborGridIndex = neighborRow.mul(uint(100)).add(neighborCol);
+            const neighborCol = uint(clamp(int(col).add(cOffset), 0, 399));
+            const neighborRow = uint(clamp(int(row).add(rOffset), 0, 399));
+            const neighborGridIndex = neighborRow.mul(uint(400)).add(neighborCol);
             
             const startIdx = cellOffsetBuffer.element(neighborGridIndex);
             const count = uint(cellCountBuffer.element(neighborGridIndex));
             
-            // Dynamic loop bounded by the actual neighbor count, capped at 1024 to prevent singularities
-            const loopCap = min(count, uint(1024));
+            // Uniform Strided Sampling: Strictly cap ALU at O(8) per cell (72 total per agent)
+            const stride = max(uint(1), count.div(uint(8)));
+            const loopCap = min(count, uint(8));
+            
             Loop(loopCap, ({ i: j }) => {
                 const jUint = uint(j);
-                const sortedIndex = startIdx.add(jUint);
+                const sortedIndex = startIdx.add(jUint.mul(stride));
                 const otherAgentId = sortedAgentIndicesBuffer.element(sortedIndex);
                 
                 If(otherAgentId.notEqual(i), () => {
-                    const otherPos = positions.element(otherAgentId);
+                    const otherPos = sortedPositionsBuffer.element(sortedIndex);
                     
-                    const dist = pos.distance(otherPos);
+                    const delta = pos.sub(otherPos);
+                    const distSq = delta.dot(delta);
                     
-                    // Repulsion threshold
-                    If(dist.lessThan(0.5).and(dist.greaterThan(0.001)), () => {
-                        const pushDir = pos.sub(otherPos).normalize();
+                    // Repulsion threshold (0.5 * 0.5 = 0.25)
+                    If(distSq.lessThan(0.25).and(distSq.greaterThan(0.000001)), () => {
+                        const dist = sqrt(distSq);
+                        const pushDir = delta.normalize();
                         const pushStrength = float(0.5).sub(dist); 
                         separation.addAssign(pushDir.mul(pushStrength));
                         neighborsCount.addAssign(uint(1));
                     });
 
-                    // Phase 7: Viral Transmission (Decoupled from physical repulsion)
-                    If(infectionBuffer.element(i).equal(uint(0)), () => {
-                        If(infectionBuffer.element(otherAgentId).equal(uint(1)), () => {
-                            If(dist.lessThan(infectionRadius), () => {
-                                If(dist.greaterThan(0.001), () => {
+                    // Phase 7: Viral Transmission (Decoupled from physical repulsion via distSq and state check)
+                    If(myInfection.notEqual(uint(2)), () => {
+                        const infRadSq = infectionRadius.mul(infectionRadius);
+                        If(distSq.lessThan(infRadSq).and(distSq.greaterThan(0.000001)), () => {
+                            If(myInfection.equal(uint(0)), () => {
+                                If(infectionBuffer.element(otherAgentId).equal(uint(1)), () => {
                                     // Generate pseudo-random value [0, 1] for this contact using PCG Hash
                                     const contactSeed = pos.x.mul(13.5).add(pos.y.mul(41.2)).add(seedUniform).add(float(otherAgentId));
                                     const rand = pcgHash(contactSeed);
@@ -343,6 +356,7 @@ export const spatialCollisionNode = Fn(([positions, velocities, cellCountBuffer,
         // Push the agent and normalize its velocity
         vel.addAssign(avgSeparation.mul(0.2)); 
         vel.assign(vel.normalize());
+    });
     });
 });
 

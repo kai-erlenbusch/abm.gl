@@ -1,4 +1,9 @@
-import SimulationCanvas from '@/components/SimulationCanvas';
+'use client';
+import dynamic from 'next/dynamic';
+
+const SimulationCanvas = dynamic(() => import('@/components/SimulationCanvas'), {
+  ssr: false,
+});
 
 export default function Home() {
   return (

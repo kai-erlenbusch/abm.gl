@@ -1,6 +1,5 @@
 'use client';
-import { useEffect, useRef } from 'react';
-import { ChartGPU } from 'chartgpu';
+import { useEffect, useRef, useState } from 'react';
 import { useSimulationStore } from '@/store/simulationStore';
 import modelSchema from '../config/modelSchema.json';
 
@@ -90,51 +89,75 @@ function SetupButtonWidget({ control }: { control: any }) {
   );
 }
 
-// Custom wrapper for ChartGPU
+function FPSMeter() {
+  const [fps, setFps] = useState(0);
+  const frameCountRef = useRef(0);
+  const lastFpsTimeRef = useRef(Date.now());
+
+  useEffect(() => {
+    const handleTelemetry = (e: any) => {
+      frameCountRef.current++;
+      const now = Date.now();
+      if (now - lastFpsTimeRef.current >= 1000) {
+        setFps(frameCountRef.current);
+        frameCountRef.current = 0;
+        lastFpsTimeRef.current = now;
+      }
+    };
+    window.addEventListener('abm-frame', handleTelemetry);
+    return () => window.removeEventListener('abm-frame', handleTelemetry);
+  }, []);
+
+  return (
+    <div className="flex justify-between items-center mb-2">
+      <div className="text-xs text-neutral-400">FPS: <span className="text-emerald-400 font-bold">{fps}</span></div>
+    </div>
+  );
+}
+
 function TelemetryChart() {
   const containerRef = useRef<HTMLDivElement>(null);
   const chartInstanceRef = useRef<any>(null);
-  
-  // Data history stored outside React state to prevent re-renders
-  const telemetryHistory = useRef<{x: number, y: number}[]>([]);
-  const policyHistory = useRef<{x: number, y: number}[]>([]);
-  
   const startTime = useRef(Date.now());
 
-  const initStarted = useRef(false);
-
   useEffect(() => {
-    if (initStarted.current) return;
-    initStarted.current = true;
-
     let isMounted = true;
     
     async function initChart() {
       if (!containerRef.current) return;
       
-      const chart = await ChartGPU.create(containerRef.current, {
-        series: [
-          { 
-            name: 'Actual Speed',
-            type: 'line', 
-            data: [], 
-            sampling: 'none',
-            // @ts-ignore
-            style: { color: '#00ffcc', lineWidth: 2 } 
-          },
-          { 
-            name: 'Policy Speed',
-            type: 'line', 
-            data: [], 
-            sampling: 'none',
-            // @ts-ignore
-            style: { color: '#ff0055', lineWidth: 2, lineDash: [5, 5] } 
+      try {
+        const { ChartGPU } = await import('chartgpu');
+        const chart = await ChartGPU.create(containerRef.current, {
+          series: [
+            { 
+              name: 'Actual Speed',
+              type: 'line', 
+              data: [], 
+              sampling: 'none',
+              // @ts-ignore
+              style: { color: '#00ffcc', lineWidth: 2 } 
+            },
+            { 
+              name: 'Policy Speed',
+              type: 'line', 
+              data: [], 
+              sampling: 'none',
+              // @ts-ignore
+              style: { color: '#ff0055', lineWidth: 2, lineDash: [5, 5] } 
+            }
+          ],
+        });
+        
+        if (isMounted) {
+          chartInstanceRef.current = chart;
+        } else {
+          if (chart && typeof chart.dispose === 'function') {
+            chart.dispose();
           }
-        ],
-      });
-      
-      if (isMounted) {
-        chartInstanceRef.current = chart;
+        }
+      } catch (err) {
+        console.warn("ChartGPU failed to initialize (likely due to WebGPU resource limits at 500k+ agents).", err);
       }
     }
     
@@ -142,9 +165,10 @@ function TelemetryChart() {
 
     return () => {
       isMounted = false;
-      if (chartInstanceRef.current && chartInstanceRef.current.destroy) {
-        chartInstanceRef.current.destroy();
+      if (chartInstanceRef.current && typeof chartInstanceRef.current.dispose === 'function') {
+        chartInstanceRef.current.dispose();
       }
+      chartInstanceRef.current = null;
     };
   }, []);
 
@@ -155,28 +179,12 @@ function TelemetryChart() {
       const { timestamp, actual_speed, policy_speed } = e.detail;
       const elapsed = (timestamp - startTime.current) / 1000; // seconds
 
-      // Check pause state directly from the store to avoid stale closure
       const currentIsPaused = useSimulationStore.getState().isPaused;
 
       if (!currentIsPaused) {
-        // Use ChartGPU's native streaming appendData API
         if (typeof chartInstanceRef.current.appendData === 'function') {
           chartInstanceRef.current.appendData(0, [[elapsed, actual_speed]]);
           chartInstanceRef.current.appendData(1, [[elapsed, policy_speed]]);
-        } else if (typeof chartInstanceRef.current.setOption === 'function') {
-          // Fallback just in case
-          telemetryHistory.current.push([elapsed, actual_speed] as any);
-          policyHistory.current.push([elapsed, policy_speed] as any);
-          if (telemetryHistory.current.length > 200) {
-             telemetryHistory.current.shift();
-             policyHistory.current.shift();
-          }
-          chartInstanceRef.current.setOption({
-            series: [
-              { type: 'line', data: telemetryHistory.current },
-              { type: 'line', data: policyHistory.current }
-            ]
-          });
         }
       }
     };
@@ -188,7 +196,12 @@ function TelemetryChart() {
     };
   }, []);
 
-  return <div ref={containerRef} className="w-full h-48 mt-4" />;
+  return (
+    <>
+      <FPSMeter />
+      <div ref={containerRef} className="w-full h-48 mt-2" />
+    </>
+  );
 }
 
 // Phase 6: High-performance raw DOM Heatmap (Zero React Re-renders)
