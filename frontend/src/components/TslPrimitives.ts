@@ -106,13 +106,9 @@ export const spatialResetNode = Fn(([cellCountBuffer, cellOffsetAtomicBuffer]) =
 });
 
 export const spatialCountNode = Fn(([positions, cellCountBuffer, agentCountLimit]: any) => {
-    // Pad to multiple of 256
+    // 1M threads
     const i = instanceIndex;
-    const localId = invocationLocalIndex;
     
-    const sharedArray = workgroupArray('uint', 256);
-    
-    // Bounds check for padding
     If(i.lessThan(agentCountLimit), () => {
         const pos = positions.element(i);
         const normX = pos.x.add(25.0);
@@ -123,59 +119,7 @@ export const spatialCountNode = Fn(([positions, cellCountBuffer, agentCountLimit
         const row = clamp(floor(normY.div(0.5)), 0, 99);
         const gridIndex = row.mul(100).add(col);
         
-        sharedArray.element(localId).assign(gridIndex);
-    }).Else(() => {
-        // Out-of-bounds padding agents placed at the very end
-        sharedArray.element(localId).assign(9999999);
-    });
-    
-    workgroupBarrier();
-    
-    // Bitonic Sort (ascending) for N=256 elements
-    for (let k = 2; k <= 256; k *= 2) {
-        for (let j = k / 2; j > 0; j = Math.floor(j / 2)) {
-            const ixj = localId.bitXor(uint(j));
-            If(ixj.greaterThan(localId), () => {
-                const dir = localId.bitAnd(uint(k)).equal(uint(0)); // true for ascending
-                const valA = sharedArray.element(localId).toVar();
-                const valB = sharedArray.element(ixj).toVar();
-                
-                // If ascending and valA > valB, or descending and valA < valB, swap
-                If(dir.equal(valA.greaterThan(valB)), () => {
-                    sharedArray.element(localId).assign(valB);
-                    sharedArray.element(ixj).assign(valA);
-                });
-            });
-            workgroupBarrier();
-        }
-    }
-    
-    // Run-Length Encoding / Batching
-    const isStart = localId.equal(0).or(sharedArray.element(localId).notEqual(sharedArray.element(localId.sub(1))));
-    
-    If(isStart, () => {
-        const currentGridIndex = sharedArray.element(localId);
-        
-        // Only valid grid indices
-        If(currentGridIndex.lessThan(10000), () => {
-            const runLength = uint(1).toVar();
-            
-            // Forward scan divergence trap (accepted as MVP)
-            Loop(256, ({ i: j }) => {
-                const targetIdx = localId.add(j).add(1);
-                If(targetIdx.lessThan(256), () => {
-                    If(sharedArray.element(targetIdx).equal(currentGridIndex), () => {
-                        runLength.addAssign(1);
-                    }).Else(() => {
-                        Break();
-                    });
-                }).Else(() => {
-                    Break();
-                });
-            });
-            
-            atomicAdd(cellCountBuffer.element(currentGridIndex), runLength);
-        });
+        atomicAdd(cellCountBuffer.element(gridIndex), uint(1));
     });
 });
 
