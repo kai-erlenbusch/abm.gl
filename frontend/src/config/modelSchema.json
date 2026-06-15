@@ -7,7 +7,8 @@
     { "type": "slider", "id": "infection_radius", "label": "Infection Radius", "min": 0.05, "max": 1.0, "step": 0.05 },
     { "type": "slider", "id": "initial_infected", "label": "Initial Infected", "min": 1, "max": 1000, "step": 1 },
     { "type": "slider", "id": "transmission_probability", "label": "Transmission Probability", "min": 0.0, "max": 1.0, "step": 0.01 },
-    { "type": "slider", "id": "recovery_time", "label": "Recovery Time (sec)", "min": 1.0, "max": 60.0, "step": 1.0 }
+    { "type": "slider", "id": "recovery_time", "label": "Recovery Time (sec)", "min": 1.0, "max": 60.0, "step": 1.0 },
+    { "type": "slider", "id": "collision_fidelity", "label": "Collision Fidelity (Max Checks)", "min": 1, "max": 64, "step": 1 }
   ],
   "plots": [
     { "id": "telemetry", "title": "Real-time Telemetry" }

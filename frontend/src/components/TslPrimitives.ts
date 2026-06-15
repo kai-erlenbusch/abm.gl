@@ -224,7 +224,7 @@ export const spatialScatterNode = Fn(([positions, velocities, cellOffsetAtomicBu
     });
 });
 
-export const spatialCollisionNode = Fn(([positions, velocities, cellCountBuffer, cellOffsetBuffer, sortedAgentIndicesBuffer, sortedPositionsBuffer, sortedVelocitiesBuffer, infectionBuffer, timerBuffer, infectionRadius, transmissionProb, recoveryTime, seedUniform, agentCountLimit]: any) => {
+export const spatialCollisionNode = Fn(([positions, velocities, cellCountBuffer, cellOffsetBuffer, sortedAgentIndicesBuffer, sortedPositionsBuffer, sortedVelocitiesBuffer, infectionBuffer, timerBuffer, infectionRadius, transmissionProb, recoveryTime, collisionFidelityUniform, seedUniform, agentCountLimit]: any) => {
     // 1M threads
     const i = instanceIndex;
     If(i.lessThan(agentCountLimit), () => {
@@ -261,9 +261,10 @@ export const spatialCollisionNode = Fn(([positions, velocities, cellCountBuffer,
             const startIdx = cellOffsetBuffer.element(neighborGridIndex);
             const count = uint(cellCountBuffer.element(neighborGridIndex));
             
-            // Uniform Strided Sampling: Cap ALU per cell (8 per cell max)
-            const stride = max(uint(1), count.div(uint(8)));
-            const loopCap = min(count, uint(8));
+            // Uniform Strided Sampling: Cap ALU per cell based on UI slider
+            const fidelityCap = uint(collisionFidelityUniform);
+            const stride = max(uint(1), count.div(fidelityCap));
+            const loopCap = min(count, fidelityCap);
             
             Loop(loopCap, ({ i: j }) => {
                 const jUint = uint(j);
