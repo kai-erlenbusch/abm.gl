@@ -317,9 +317,9 @@ export const spatialCollisionNode = Fn(([positions, velocities, cellCountBuffer,
             const startIdx = cellOffsetBuffer.element(neighborGridIndex);
             const count = uint(cellCountBuffer.element(neighborGridIndex));
             
-            // Uniform Strided Sampling: Cap ALU per cell (32 per cell max)
-            const stride = max(uint(1), count.div(uint(32)));
-            const loopCap = min(count, uint(32));
+            // Uniform Strided Sampling: Cap ALU per cell (8 per cell max)
+            const stride = max(uint(1), count.div(uint(8)));
+            const loopCap = min(count, uint(8));
             
             Loop(loopCap, ({ i: j }) => {
                 const jUint = uint(j);
