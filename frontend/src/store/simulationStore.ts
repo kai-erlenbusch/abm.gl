@@ -3,6 +3,8 @@ import { create } from 'zustand';
 interface SimulationState {
   isPaused: boolean;
   setIsPaused: (val: boolean) => void;
+  isMacroThinking: boolean;
+  setIsMacroThinking: (val: boolean) => void;
   lastLlmSend: number;
   setLastLlmSend: (time: number) => void;
   
@@ -18,6 +20,8 @@ interface SimulationState {
 export const useSimulationStore = create<SimulationState>((set) => ({
   isPaused: false,
   setIsPaused: (val: boolean) => set({ isPaused: val }),
+  isMacroThinking: false,
+  setIsMacroThinking: (val: boolean) => set({ isMacroThinking: val }),
   lastLlmSend: 0,
   setLastLlmSend: (time: number) => set({ lastLlmSend: time }),
   

@@ -1,9 +1,15 @@
 import { 
     Fn, float, vec3, abs, If, Loop, instanceIndex, uint, int,
     atomicAdd, atomicLoad, atomicStore, min,
-    workgroupBarrier, workgroupId, workgroupArray, clamp, floor,
+    workgroupBarrier, workgroupId, workgroupArray, clamp, floor, ceil,
     fract, sin, length, texture, vec2, Break, invocationLocalIndex, mod, select
 } from 'three/tsl';
+
+export const pcgHash = Fn(([seed]) => {
+    const state = uint(seed).mul(uint(747796405)).add(uint(2891336453));
+    const word = state.shiftRight(state.shiftRight(28).add(uint(4))).bitXor(state).mul(uint(277803737));
+    return float(word.shiftRight(22).bitXor(word)).div(float(4294967295.0));
+});
 
 /**
  * 1. Flocking Behavior Primitive
@@ -159,28 +165,82 @@ export const spatialCountNode = Fn(([positions, cellCountBuffer]) => {
 });
 
 // ------------------------------------------------------------------------------------------------
-// PASS 2: Sequential Prefix Sum (O(N) single-threaded approach)
-// For exactly 10,000 cells, a single GPU thread looping 10,000 times takes ~1 microsecond.
-// This completely avoids workgroup sync barriers, TSL loop unrolling hazards, and block additions.
+// PASS 2: 3-Pass Parallel Prefix Sum (Blelloch Scan Variant)
 // ------------------------------------------------------------------------------------------------
-export const spatialPrefixSum_SequentialNode = Fn(([cellCountBuffer, cellOffsetBuffer, cellOffsetAtomicBuffer]: any) => {
-    const i = instanceIndex;
+
+// Pass 2a: Local Chunk Scan
+export const spatialPrefixSum_ChunkNode = Fn(([cellCountBuffer, cellOffsetBuffer, chunkSumsBuffer]: any) => {
+    const globalId = instanceIndex;
+    const localId = invocationLocalIndex;
+    const groupId = workgroupId.x;
     
-    // Only thread 0 does the work
+    const sharedArray = workgroupArray('uint', 256);
+    
+    // Load data into shared memory
+    const count = select(globalId.lessThan(10240), uint(cellCountBuffer.element(globalId)), uint(0));
+    sharedArray.element(localId).assign(count);
+    workgroupBarrier();
+    
+    // Up-Sweep (Reduce)
+    for (let offset = 1; offset < 256; offset *= 2) {
+        const i = localId.mul(offset * 2).add(offset * 2 - 1);
+        If(i.lessThan(256), () => {
+            sharedArray.element(i).addAssign(sharedArray.element(i.sub(offset)));
+        });
+        workgroupBarrier();
+    }
+    
+    // Clear the last element for Down-Sweep
+    If(localId.equal(255), () => {
+        // Save the total chunk sum
+        If(groupId.lessThan(64), () => {
+            chunkSumsBuffer.element(groupId).assign(sharedArray.element(255));
+        });
+        sharedArray.element(255).assign(uint(0));
+    });
+    workgroupBarrier();
+    
+    // Down-Sweep
+    for (let offset = 128; offset > 0; offset /= 2) {
+        const i = localId.mul(offset * 2).add(offset * 2 - 1);
+        If(i.lessThan(256), () => {
+            const temp = sharedArray.element(i.sub(offset)).toVar();
+            sharedArray.element(i.sub(offset)).assign(sharedArray.element(i));
+            sharedArray.element(i).addAssign(temp);
+        });
+        workgroupBarrier();
+    }
+    
+    // Write out the exclusive prefix sum for this chunk
+    If(globalId.lessThan(10240), () => {
+        cellOffsetBuffer.element(globalId).assign(sharedArray.element(localId));
+    });
+});
+
+// Pass 2b: Block Scan (Sequential scan of the chunk sums)
+export const spatialPrefixSum_BlockNode = Fn(([chunkSumsBuffer]: any) => {
+    const i = instanceIndex;
     If(i.equal(uint(0)), () => {
         const sum = uint(0).toVar();
-        
-        Loop(10000, ({ i: j }) => {
+        Loop(64, ({ i: j }) => {
             const jUint = uint(j);
-            const count = uint(cellCountBuffer.element(jUint));
-            
-            // Assign the current sum to the offset buffers
-            cellOffsetBuffer.element(jUint).assign(sum);
-            atomicStore(cellOffsetAtomicBuffer.element(jUint), sum);
-            
-            // Add this cell's count to the running sum
+            const count = uint(chunkSumsBuffer.element(jUint));
+            chunkSumsBuffer.element(jUint).assign(sum);
             sum.addAssign(count);
         });
+    });
+});
+
+// Pass 2c: Scatter/Add global block offsets to local chunks
+export const spatialPrefixSum_ScatterNode = Fn(([cellOffsetBuffer, cellOffsetAtomicBuffer, chunkSumsBuffer]: any) => {
+    const globalId = instanceIndex;
+    const groupId = workgroupId.x;
+    
+    If(globalId.lessThan(10240), () => {
+        const blockOffset = chunkSumsBuffer.element(groupId);
+        const finalOffset = cellOffsetBuffer.element(globalId).add(blockOffset);
+        cellOffsetBuffer.element(globalId).assign(finalOffset);
+        atomicStore(cellOffsetAtomicBuffer.element(globalId), finalOffset);
     });
 });
 
@@ -217,18 +277,25 @@ export const spatialCollisionNode = Fn(([positions, velocities, cellCountBuffer,
     const separation = vec3(0, 0, 0).toVar();
     const neighborsCount = uint(0).toVar();
     
-    for (let rOffset = -1; rOffset <= 1; rOffset++) {
-        for (let cOffset = -1; cOffset <= 1; cOffset++) {
-            const neighborCol = uint(clamp(int(col).add(int(cOffset)), 0, 99));
-            const neighborRow = uint(clamp(int(row).add(int(rOffset)), 0, 99));
+    // Dynamic search bounds based on infection radius.
+    // Cell size is 0.5 units.
+    const searchRadius = int(ceil(infectionRadius.div(0.5)));
+    const gridSpan = searchRadius.mul(2).add(1);
+    
+    Loop(gridSpan, ({ i: rIndex }) => {
+        Loop(gridSpan, ({ i: cIndex }) => {
+            const rOffset = int(rIndex).sub(searchRadius);
+            const cOffset = int(cIndex).sub(searchRadius);
+            
+            const neighborCol = uint(clamp(int(col).add(cOffset), 0, 99));
+            const neighborRow = uint(clamp(int(row).add(rOffset), 0, 99));
             const neighborGridIndex = neighborRow.mul(uint(100)).add(neighborCol);
             
             const startIdx = cellOffsetBuffer.element(neighborGridIndex);
             const count = uint(cellCountBuffer.element(neighborGridIndex));
             
-            // Use a dynamic loop bounded by the actual neighbor count, capped at 256
-            // This dynamically speeds up sparse regions while preventing TDR crashes in dense swarms
-            const loopCap = min(count, uint(256));
+            // Dynamic loop bounded by the actual neighbor count, capped at 1024 to prevent singularities
+            const loopCap = min(count, uint(1024));
             Loop(loopCap, ({ i: j }) => {
                 const jUint = uint(j);
                 const sortedIndex = startIdx.add(jUint);
@@ -252,9 +319,9 @@ export const spatialCollisionNode = Fn(([positions, velocities, cellCountBuffer,
                         If(infectionBuffer.element(otherAgentId).equal(uint(1)), () => {
                             If(dist.lessThan(infectionRadius), () => {
                                 If(dist.greaterThan(0.001), () => {
-                                    // Generate pseudo-random value [0, 1] for this contact
+                                    // Generate pseudo-random value [0, 1] for this contact using PCG Hash
                                     const contactSeed = pos.x.mul(13.5).add(pos.y.mul(41.2)).add(seedUniform).add(float(otherAgentId));
-                                    const rand = fract(sin(contactSeed).mul(43758.5453));
+                                    const rand = pcgHash(contactSeed);
                                     
                                     If(rand.lessThan(transmissionProb), () => {
                                         infectionBuffer.element(i).assign(uint(1));
@@ -266,8 +333,8 @@ export const spatialCollisionNode = Fn(([positions, velocities, cellCountBuffer,
                     });
                 });
             });
-        }
-    }
+        });
+    });
     
     If(neighborsCount.greaterThan(uint(0)), () => {
         // Average the separation force
@@ -285,19 +352,14 @@ export const setupEpidemicNode = Fn(([positions, velocities, infectionBuffer, ti
     const vel = velocities.element(i);
     const infection = infectionBuffer.element(i);
 
-    // Simple PRNG using instanceIndex and a dynamic seed
-    // To avoid float32 precision loss and sine drift at i=1,000,000,
-    // we map the 1D thread index to a perfect 1000x1000 2D grid, then add micro-jitter.
-    // Use mod to prevent float32 precision loss when i > 10,000
-    const smallI = mod(float(i), 1000.0);
-    const gridY = floor(float(i).div(1000.0));
+    // Robust PRNG using PCG Hash
+    // We can just use the global index and the seed, no float32 drift hacks needed!
+    const seedBase = float(i).add(seed.mul(10000.0));
     
-    // Mix them uniquely to get good PRNG spread
-    const seed1 = smallI.add(gridY.mul(0.1)).add(seed);
-    const r1 = fract(sin(seed1.mul(12.9898)).mul(43758.5453));
-    const r2 = fract(sin(seed1.mul(78.233)).mul(43758.5453));
-    const r3 = fract(sin(seed1.mul(45.123)).mul(43758.5453));
-    const r4 = fract(sin(seed1.mul(93.989)).mul(43758.5453));
+    const r1 = pcgHash(seedBase.mul(12.9898));
+    const r2 = pcgHash(seedBase.mul(78.233));
+    const r3 = pcgHash(seedBase.mul(45.123));
+    const r4 = pcgHash(seedBase.mul(93.989));
 
     // Place randomly across the whole board
     pos.x.assign(r1.sub(0.5).mul(50.0));

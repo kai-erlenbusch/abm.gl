@@ -16,7 +16,7 @@ const AGENT_COUNT = 100000;
 
 function MicroEngine() {
   const meshRef = useRef<THREE.InstancedMesh>(null);
-  const { currentPolicy, isMacroThinking, sendAggregateStats } = useSimulationBridge();
+  const { currentPolicy, sendAggregateStats } = useSimulationBridge();
   
   const [computeNode, setComputeNode] = useState<any>(null);
   const [resetComputeNode, setResetComputeNode] = useState<any>(null);
@@ -41,61 +41,65 @@ function MicroEngine() {
     recoveryTimeUniform.value = (dynamicParams.recovery_time ?? 60.0) * 60.0; // Assuming 60 fps frames
     
     // Convert N initial agents into a physical radius 
-    // Area = 50x50 = 2500. Density = 100k / 2500 = 40 agents per unit area.
-    // N = pi * r^2 * 40 => r = sqrt(N / (40 * pi))
+    // Area = 50x50 = 2500. Density = AGENT_COUNT / 2500.
+    // N = pi * r^2 * density => r = sqrt(N / (density * pi))
     const n = dynamicParams.initial_infected ?? 100;
-    initialInfectedUniform.value = Math.sqrt(n / (40 * Math.PI));
+    const density = AGENT_COUNT / 2500.0;
+    initialInfectedUniform.value = Math.sqrt(n / (density * Math.PI));
   }, [dynamicParams, infectionRadiusUniform, initialInfectedUniform, transmissionProbUniform, recoveryTimeUniform]);
 
   useEffect(() => {
     if (setupTrigger > lastSetupTrigger.current) {
-        lastSetupTrigger.current = setupTrigger;
-        seedUniform.value = Math.random();
-        needsSetupRef.current = true;
+      needsSetupRef.current = true;
+      lastSetupTrigger.current = setupTrigger;
     }
-  }, [setupTrigger, seedUniform]);
-  
-  // Spatial Grid Nodes
+  }, [setupTrigger]);
+
+  const [aggregateAttribute, setAggregateAttribute] = useState<any>(null);
+  const [material, setMaterial] = useState<any>(null);
   const [pass0Node, setPass0Node] = useState<any>(null);
   const [pass1Node, setPass1Node] = useState<any>(null);
   const [pass2aNode, setPass2aNode] = useState<any>(null);
+  const [pass2bNode, setPass2bNode] = useState<any>(null);
+  const [pass2cNode, setPass2cNode] = useState<any>(null);
   const [pass3Node, setPass3Node] = useState<any>(null);
   const [pass4Node, setPass4Node] = useState<any>(null);
 
-  const [material, setMaterial] = useState<any>(null);
-  const [policyTexture] = useState(() => {
-    const data = new Float32Array(100 * 4);
-    for (let i = 0; i < 400; i++) data[i] = 0.1;
-    const tex = new THREE.DataTexture(data, 10, 10, THREE.RGBAFormat, THREE.FloatType);
-    tex.magFilter = THREE.LinearFilter;
-    tex.minFilter = THREE.LinearFilter;
+  const policyTexture = useMemo(() => {
+    const data = new Uint8Array(10 * 10 * 4);
+    for (let i = 0; i < data.length; i += 4) {
+      data[i] = 25;   // R
+      data[i+1] = 0;  // G
+      data[i+2] = 0;  // B
+      data[i+3] = 1;  // A
+    }
+    const tex = new THREE.DataTexture(data, 10, 10, THREE.RGBAFormat);
     tex.needsUpdate = true;
     return tex;
-  });
-  const [aggregateAttribute, setAggregateAttribute] = useState<any>(null);
+  }, []);
   const lastReadbackRef = useRef(0);
 
   useEffect(() => {
-    // 1. StorageBuffers Setup
+    // 1. Data Buffers
     const posArray = new Float32Array(AGENT_COUNT * 3);
     const velArray = new Float32Array(AGENT_COUNT * 3);
+    const infectionArray = new Uint32Array(AGENT_COUNT);
     for (let i = 0; i < AGENT_COUNT; i++) {
-      posArray[i * 3] = (Math.random() - 0.5) * 50;
-      posArray[i * 3 + 1] = (Math.random() - 0.5) * 50;
+      posArray[i * 3] = (Math.random() * 50) - 25;
+      posArray[i * 3 + 1] = (Math.random() * 50) - 25;
       posArray[i * 3 + 2] = 0;
       
-      velArray[i * 3] = (Math.random() - 0.5) * 2;
-      velArray[i * 3 + 1] = (Math.random() - 0.5) * 2;
+      const angle = Math.random() * Math.PI * 2;
+      velArray[i * 3] = Math.cos(angle);
+      velArray[i * 3 + 1] = Math.sin(angle);
       velArray[i * 3 + 2] = 0;
     }
-
+    
     const posAttr = new StorageInstancedBufferAttribute(posArray, 3);
     const velAttr = new StorageInstancedBufferAttribute(velArray, 3);
-    
-    // CPU initializes as 0, GPU setupNodePass handles the Ground Zero seeding
-    const infectionArray = new Uint32Array(AGENT_COUNT);
     const infectionAttr = new StorageInstancedBufferAttribute(infectionArray, 1);
     
+    // Recovery timers
     const timerArray = new Float32Array(AGENT_COUNT);
     const timerAttr = new StorageInstancedBufferAttribute(timerArray, 1);
     
@@ -122,12 +126,11 @@ function MicroEngine() {
     const resetNode = resetAggregate(aggregateNode.toAtomic());
     setResetComputeNode(resetNode.compute(400)); // 400 threads for 400 cells
 
-    // 3. Spatial Grid Buffers (Point D & V2 Decoupling)
-    // Pad to 10240 (40 chunks of 256) for Blelloch Scan alignment
+    // 3. Spatial Grid Buffers
     const cellCountArray = new Uint32Array(10240);
     const cellOffsetArray = new Uint32Array(10240);
     const cellOffsetAtomicArray = new Uint32Array(10240);
-    const chunkSumsArray = new Uint32Array(64);
+    const chunkSumsArray = new Uint32Array(64); // 10240 / 256 = 40 chunks, 64 is safe
     const sortedAgentArray = new Uint32Array(AGENT_COUNT);
     
     const countAttr = new StorageBufferAttribute(cellCountArray, 1);
@@ -136,8 +139,8 @@ function MicroEngine() {
     const chunkSumsAttr = new StorageBufferAttribute(chunkSumsArray, 1);
     const sortedAttr = new StorageBufferAttribute(sortedAgentArray, 1);
     
-    const countNode = storage(countAttr, 'uint', 10240);
     const countAtomicNode = storage(countAttr, 'uint', 10240).toAtomic();
+    const countNode = storage(countAttr, 'uint', 10240);
     const offsetNode = storage(offsetAttr, 'uint', 10240);
     const offsetAtomicNode = storage(offsetAtomicAttr, 'uint', 10240).toAtomic();
     const chunkSumsNode = storage(chunkSumsAttr, 'uint', 64);
@@ -151,22 +154,22 @@ function MicroEngine() {
     pass1.workgroupSize = [256, 1, 1];
     setPass1Node(pass1);
     
-    // --------------------------------------------------------
-    // PASS 2: Prefix Sum
-    // Calculates global offsets for each cell
-    // Single-threaded pass (O(N)) because 10,000 cells is tiny for GPU
-    // --------------------------------------------------------
     // @ts-ignore
-    const pass2 = spatialPrefixSum_SequentialNode(countNode, offsetNode, offsetAtomicNode).compute(1);
-    setPass2aNode(pass2);
+    const pass2a = spatialPrefixSum_ChunkNode(countNode, offsetNode, chunkSumsNode).compute(10240);
+    pass2a.workgroupSize = [256, 1, 1];
+    setPass2aNode(pass2a);
     
-    // --------------------------------------------------------
-    // PASS 3: Scatter
-    // Sorts agent indices into the sorted array based on grid cells
-    // --------------------------------------------------------
+    // @ts-ignore
+    const pass2b = spatialPrefixSum_BlockNode(chunkSumsNode).compute(1);
+    setPass2bNode(pass2b);
+    
+    // @ts-ignore
+    const pass2c = spatialPrefixSum_ScatterNode(offsetNode, offsetAtomicNode, chunkSumsNode).compute(10240);
+    pass2c.workgroupSize = [256, 1, 1];
+    setPass2cNode(pass2c);
+    
     // @ts-ignore
     setPass3Node(spatialScatterNode(positionsNode, offsetAtomicNode, sortedNode).compute(AGENT_COUNT));
-    // Here we use the standard nodes to read the populated data without atomic locks
     // @ts-ignore
     setPass4Node(spatialCollisionNode(positionsNode, velocitiesNode, countNode, offsetNode, sortedNode, infectionNode, timerNode, infectionRadiusUniform, transmissionProbUniform, recoveryTimeUniform, seedUniform).compute(AGENT_COUNT));
 
@@ -186,7 +189,22 @@ function MicroEngine() {
     );
     
     setMaterial(mat);
-  }, [policyTexture]);
+
+    return () => {
+      posAttr.dispose();
+      velAttr.dispose();
+      infectionAttr.dispose();
+      timerAttr.dispose();
+      aggAttr.dispose();
+      countAttr.dispose();
+      offsetAttr.dispose();
+      offsetAtomicAttr.dispose();
+      chunkSumsAttr.dispose();
+      sortedAttr.dispose();
+      mat.dispose();
+      policyTexture.dispose();
+    };
+  }, [policyTexture, seedUniform, initialInfectedUniform, recoveryTimeUniform, infectionRadiusUniform, transmissionProbUniform]);
 
   useEffect(() => {
     if (currentPolicy?.policy_speed_map) {
@@ -195,12 +213,9 @@ function MicroEngine() {
       if (!data) return;
       for (let r = 0; r < 10; r++) {
         for (let c = 0; c < 10; c++) {
-          const texR = 9 - r; // Invert Y for DataTexture (v=0 is bottom)
+          const texR = 9 - r; 
           const i = (texR * 10 + c) * 4;
-          data[i] = map[r][c]; // R channel
-          data[i+1] = 0;
-          data[i+2] = 0;
-          data[i+3] = 1;
+          data[i] = map[r][c]; 
         }
       }
       policyTexture.needsUpdate = true;
@@ -209,28 +224,25 @@ function MicroEngine() {
 
   useFrame(async (state, delta) => {
     if (!meshRef.current || !computeNode || !resetComputeNode || !aggregateAttribute) return;
-    if (!pass0Node || !pass1Node || !pass2aNode || !pass3Node || !pass4Node) return;
+    if (!pass0Node || !pass1Node || !pass2aNode || !pass2bNode || !pass2cNode || !pass3Node || !pass4Node) return;
     
-    // Check if our WebGPU hack has initialized
     if (!(state.gl as any).__initialized) return;
 
-    // Phase 8: Dynamic Setup Trigger (moved above pause check so you can preview setup)
     if (needsSetupRef.current && setupNodePass) {
         await (state.gl as any).computeAsync(setupNodePass);
         needsSetupRef.current = false;
     }
 
-    const { isPaused, lastLlmSend, setLastLlmSend } = useSimulationStore.getState();
-    if (!isPaused) {
+    const { isPaused, isMacroThinking, lastLlmSend, setLastLlmSend } = useSimulationStore.getState();
+    if (!isPaused && !isMacroThinking) {
         try {
-          // Pass 0: Reset cell counts and offsets
           await (state.gl as any).computeAsync(pass0Node);
-          
-          // Pass 1: Count agents per cell
           await (state.gl as any).computeAsync(pass1Node);
           
-          // Pass 2: Sequential Prefix Sum
+          // Pass 2: 3-Pass Parallel Prefix Sum
           await (state.gl as any).computeAsync(pass2aNode);
+          await (state.gl as any).computeAsync(pass2bNode);
+          await (state.gl as any).computeAsync(pass2cNode);
           
           // Pass 3: Scatter agents into sorted array
           await (state.gl as any).computeAsync(pass3Node);

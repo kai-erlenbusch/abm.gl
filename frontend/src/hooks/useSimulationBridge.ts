@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState, useCallback } from 'react';
+import { useSimulationStore } from '@/store/simulationStore';
 
 export type Policy = {
   infection_radius: number;
@@ -10,7 +11,7 @@ export function useSimulationBridge(url: string = 'ws://localhost:8000/ws') {
   const ws = useRef<WebSocket | null>(null);
   const [currentPolicy, setCurrentPolicy] = useState<Policy | null>(null);
   const [isConnected, setIsConnected] = useState(false);
-  const [isMacroThinking, setIsMacroThinking] = useState(false);
+  const setIsMacroThinking = useSimulationStore(state => state.setIsMacroThinking);
 
   useEffect(() => {
     const token = process.env.NEXT_PUBLIC_SIMULATION_TOKEN || "dev_secret_token";
@@ -42,5 +43,5 @@ export function useSimulationBridge(url: string = 'ws://localhost:8000/ws') {
     }
   }, [currentPolicy]);
 
-  return { isConnected, isMacroThinking, currentPolicy, sendAggregateStats };
+  return { isConnected, currentPolicy, sendAggregateStats };
 }

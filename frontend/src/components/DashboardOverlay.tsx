@@ -263,6 +263,18 @@ export default function DashboardOverlay() {
         </div>
       </div>
       
+      {/* Meta details */}
+      <div className="bg-neutral-900 border border-neutral-800 rounded-lg p-3 text-xs text-neutral-400 space-y-2 mb-6">
+        <div className="flex justify-between">
+          <span>Agents</span>
+          <span className="text-white">100,000 (WebGPU)</span>
+        </div>
+        <div className="flex justify-between">
+          <span>Macro Engine</span>
+          <span className="text-white">Shachi (Python LLM)</span>
+        </div>
+      </div>
+
       <div className="space-y-4">
         <div className="bg-neutral-900/50 p-4 rounded-lg border border-neutral-800">
           {modelSchema.monitors.map((m: any) => (
