@@ -224,13 +224,16 @@ export const spatialScatterNode = Fn(([positions, velocities, cellOffsetAtomicBu
     });
 });
 
-export const spatialCollisionNode = Fn(([positions, velocities, cellCountBuffer, cellOffsetBuffer, sortedAgentIndicesBuffer, sortedPositionsBuffer, sortedVelocitiesBuffer, infectionBuffer, timerBuffer, infectionRadius, transmissionProb, recoveryTime, collisionFidelityUniform, seedUniform, agentCountLimit]: any) => {
+export const spatialCollisionNode = Fn(([positions, velocities, cellCountBuffer, cellOffsetBuffer, sortedAgentIndicesBuffer, sortedPositionsBuffer, sortedVelocitiesBuffer, infectionBuffer, timerBuffer, infectionRadius, transmissionProb, recoveryTime, seedUniform, agentCountLimit]: any) => {
     // 1M threads
-    const i = instanceIndex;
-    If(i.lessThan(agentCountLimit), () => {
-        const pos = positions.element(i);
-        const vel = velocities.element(i);
-        const myInfection = infectionBuffer.element(i);
+    const sortedThreadId = instanceIndex;
+    If(sortedThreadId.lessThan(agentCountLimit), () => {
+        // Fix Warp Divergence: Threads in a warp process spatially adjacent agents
+        const realAgentId = sortedAgentIndicesBuffer.element(sortedThreadId);
+        
+        const pos = positions.element(realAgentId);
+        const vel = velocities.element(realAgentId);
+        const myInfection = infectionBuffer.element(realAgentId);
         
         const normX = pos.x.add(25.0);
         const normY = pos.y.add(25.0);
@@ -261,17 +264,17 @@ export const spatialCollisionNode = Fn(([positions, velocities, cellCountBuffer,
             const startIdx = cellOffsetBuffer.element(neighborGridIndex);
             const count = uint(cellCountBuffer.element(neighborGridIndex));
             
-            // Uniform Strided Sampling: Cap ALU per cell based on UI slider
-            const fidelityCap = uint(collisionFidelityUniform);
-            const stride = max(uint(1), count.div(fidelityCap));
-            const loopCap = min(count, fidelityCap);
+            // Volume Exclusion Cap: Physically, only a finite amount of matter can occupy a cell.
+            // Reading linearly ensures perfectly coalesced memory access from our Prefix Sum sorted buffers.
+            const loopCap = min(count, uint(1024));
             
             Loop(loopCap, ({ i: j }) => {
                 const jUint = uint(j);
-                const sortedIndex = startIdx.add(jUint.mul(stride));
+                // LINEAR READ: No stride. Fixes Memory Coalescing!
+                const sortedIndex = startIdx.add(jUint);
                 const otherAgentId = sortedAgentIndicesBuffer.element(sortedIndex);
                 
-                If(otherAgentId.notEqual(i), () => {
+                If(otherAgentId.notEqual(realAgentId), () => {
                     const otherPos = sortedPositionsBuffer.element(sortedIndex);
                     
                     const delta = pos.sub(otherPos);
@@ -297,8 +300,8 @@ export const spatialCollisionNode = Fn(([positions, velocities, cellCountBuffer,
                                     const rand = pcgHash(contactSeed);
                                     
                                     If(rand.lessThan(transmissionProb), () => {
-                                        infectionBuffer.element(i).assign(uint(1));
-                                        timerBuffer.element(i).assign(recoveryTime);
+                                        infectionBuffer.element(realAgentId).assign(uint(1));
+                                        timerBuffer.element(realAgentId).assign(recoveryTime);
                                     });
                                 });
                             });

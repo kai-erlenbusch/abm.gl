@@ -33,7 +33,6 @@ function MicroEngine({ agentCount }: { agentCount: number }) {
   const initialInfectedUniform = useMemo(() => uniform(2.0), []);
   const transmissionProbUniform = useMemo(() => uniform(1.0), []);
   const recoveryTimeUniform = useMemo(() => uniform(600.0), []);
-  const collisionFidelityUniform = useMemo(() => uniform(8), []);
   const deltaUniform = useMemo(() => uniform(1.0), []); // frame delta
   const seedUniform = useMemo(() => uniform(0.0), []);
 
@@ -48,8 +47,7 @@ function MicroEngine({ agentCount }: { agentCount: number }) {
     const n = dynamicParams.initial_infected ?? 100;
     const density = agentCount / 2500.0;
     initialInfectedUniform.value = Math.sqrt(n / (density * Math.PI));
-    collisionFidelityUniform.value = dynamicParams.collision_fidelity ?? 8;
-  }, [dynamicParams, infectionRadiusUniform, initialInfectedUniform, transmissionProbUniform, recoveryTimeUniform, collisionFidelityUniform]);
+  }, [dynamicParams, infectionRadiusUniform, initialInfectedUniform, transmissionProbUniform, recoveryTimeUniform]);
 
   useEffect(() => {
     if (setupTrigger > lastSetupTrigger.current) {
@@ -194,7 +192,7 @@ function MicroEngine({ agentCount }: { agentCount: number }) {
     // @ts-ignore
     setPass3Node(spatialScatterNode(positionsNode, velocitiesNode, offsetAtomicNode, sortedNode, sortedPosNode, sortedVelNode, uint(agentCount)).compute(agentCount));
     // @ts-ignore
-    setPass4Node(spatialCollisionNode(positionsNode, velocitiesNode, countNode, offsetNode, sortedNode, sortedPosNode, sortedVelNode, infectionNode, timerNode, infectionRadiusUniform, transmissionProbUniform, recoveryTimeUniform, collisionFidelityUniform, seedUniform, uint(agentCount)).compute(agentCount));
+    setPass4Node(spatialCollisionNode(positionsNode, velocitiesNode, countNode, offsetNode, sortedNode, sortedPosNode, sortedVelNode, infectionNode, timerNode, infectionRadiusUniform, transmissionProbUniform, recoveryTimeUniform, seedUniform, uint(agentCount)).compute(agentCount));
 
     // 4. WebGPU Material Binding
     const mat = new PointsNodeMaterial();
