@@ -220,7 +220,7 @@ export default function Home() {
                     PosY_Copied: posC[i*2+1].toFixed(4)
                 });
             }
-            console.table(diagnosticData);
+            console.log(JSON.stringify(diagnosticData, null, 2));
             console.log("=== DIAGNOSTIC COMPLETE ===");
             
         } catch (e) {
