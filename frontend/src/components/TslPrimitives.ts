@@ -12,6 +12,13 @@ export const prngHash = Fn(([seed]) => {
     return float(x.bitAnd(uint(0x7fffffff))).div(float(0x7fffffff));
 });
 
+export const hashUInt = Fn(([seed]) => {
+    let x = uint(seed);
+    x = x.shiftLeft(uint(13)).bitXor(x);
+    x = x.mul(x.mul(x).mul(uint(15731)).add(uint(789221))).add(uint(1376312589));
+    return x;
+});
+
 /**
  * 1. Flocking Behavior Primitive
  * Calculates separation, alignment, and cohesion entirely on the GPU.
@@ -154,18 +161,25 @@ export const spatialCollisionNode = Fn(([velocities, velocities_next, infectionB
                         const distSq = delta.dot(delta);
                         
                         // Repulsion threshold (0.5 * 0.5 = 0.25)
-                        If(distSq.lessThan(0.25).and(distSq.greaterThan(0.000001)), () => {
-                            const dist = sqrt(distSq);
-                            const pushDir = delta.normalize();
-                            const pushStrength = float(0.5).sub(dist); 
-                            separation.addAssign(pushDir.mul(pushStrength));
-                            neighborsCount.addAssign(uint(1));
+                        If(distSq.lessThan(0.25), () => {
+                            If(distSq.greaterThan(0.000001), () => {
+                                const dist = sqrt(distSq);
+                                const pushDir = delta.normalize();
+                                const pushStrength = float(0.5).sub(dist); 
+                                separation.addAssign(pushDir.mul(pushStrength));
+                                neighborsCount.addAssign(uint(1));
+                            }).Else(() => {
+                                // Micro-jitter for perfectly overlapping particles to push them apart deterministically
+                                const dirX = select(realAgentId.greaterThan(otherAgentId), float(1.0), float(-1.0));
+                                separation.addAssign(vec2(dirX, 0.0).mul(0.1));
+                                neighborsCount.addAssign(uint(1));
+                            });
                         });
 
                         // Phase 7: Viral Transmission (Decoupled from physical repulsion via distSq and state check)
                         If(myInfection.notEqual(uint(2)), () => {
                             const infRadSq = infectionRadius.mul(infectionRadius);
-                            If(distSq.lessThan(infRadSq).and(distSq.greaterThan(0.000001)), () => {
+                            If(distSq.lessThan(infRadSq), () => {
                                 If(myInfection.equal(uint(0)), () => {
                                     If(infectionBuffer.element(otherAgentId).equal(uint(1)), () => {
                                         // Generate pseudo-random value [0, 1] for this contact using PCG Hash
@@ -218,15 +232,16 @@ export const setupEpidemicNode = Fn(([positions, velocities, infectionBuffer, ti
         const base = uint(i).add(uSeed);
         
         // Feed the output of the hash back into itself to break linear resonance
-        const h1 = uint(prngHash(base).mul(4294967295.0));
-        const h2 = uint(prngHash(h1).mul(4294967295.0));
-        const h3 = uint(prngHash(h2).mul(4294967295.0));
-        const h4 = uint(prngHash(h3).mul(4294967295.0));
+        const h1 = hashUInt(base);
+        const h2 = hashUInt(h1);
+        const h3 = hashUInt(h2);
+        const h4 = hashUInt(h3);
         
-        const r1 = float(h1).div(4294967295.0);
-        const r2 = float(h2).div(4294967295.0);
-        const r3 = float(h3).div(4294967295.0);
-        const r4 = float(h4).div(4294967295.0);
+        // Convert to float [0, 1) using 24 bits of entropy to avoid f32 precision loss
+        const r1 = float(h1.bitAnd(uint(0xffffff))).div(float(16777216.0));
+        const r2 = float(h2.bitAnd(uint(0xffffff))).div(float(16777216.0));
+        const r3 = float(h3.bitAnd(uint(0xffffff))).div(float(16777216.0));
+        const r4 = float(h4.bitAnd(uint(0xffffff))).div(float(16777216.0));
 
         // Place randomly across the whole board
         pos.assign(vec2(
