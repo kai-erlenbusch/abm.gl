@@ -1,6 +1,6 @@
 // @ts-nocheck
 import { StorageBufferAttribute } from 'three/webgpu';
-import { storage } from 'three/tsl';
+import { storage, Fn, instanceIndex, If } from 'three/tsl';
 
 /**
  * AgentDataStore manages the Structure of Arrays (SoA) for our agents.
@@ -51,8 +51,23 @@ export class AgentDataStore {
 
   // Swaps State A and State B (conceptually, by dispatching a copy or flipping pointers in a real engine)
   // In WebGPU TSL, we can just write a compute pass to copy next -> current.
-  getCopyPassNode() {
-     // TODO: Return a TSL Compute node that copies all _next buffers into primary buffers
+  getCopyPassNode(agentCountLimit: any) {
+     const keys = Object.keys(this.attributes).filter(k => !k.endsWith('_next'));
+     const primaryNodes = keys.map(k => this.nodes[k]);
+     const nextNodes = keys.map(k => this.nodes[`${k}_next`]);
+     
+     // @ts-ignore
+     const copyFn = Fn(() => {
+        // @ts-ignore
+        const i = instanceIndex;
+        If(i.lessThan(agentCountLimit), () => {
+            for (let j = 0; j < keys.length; j++) {
+                primaryNodes[j].element(i).assign(nextNodes[j].element(i));
+            }
+        });
+     });
+     
+     return copyFn();
   }
 
   dispose() {

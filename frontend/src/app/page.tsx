@@ -45,7 +45,7 @@ export default function Home() {
   useEffect(() => {
     infectionRadiusUniform.value = dynamicParams.infection_radius ?? 0.2;
     transmissionProbUniform.value = dynamicParams.transmission_probability ?? 1.0;
-    recoveryTimeUniform.value = (dynamicParams.recovery_time ?? 60.0) * 60.0;
+    recoveryTimeUniform.value = dynamicParams.recovery_time ?? 60.0;
     const n = dynamicParams.initial_infected ?? 100;
     const density = agentCount / 2500.0;
     initialInfectedUniform.value = Math.sqrt(n / (density * Math.PI));
@@ -59,10 +59,11 @@ export default function Home() {
     store.addProperty('timer', 1, 'float');
 
     const grid = new SpatialGrid(100, 100, agentCount);
+    const agentCountUniform = uniform(agentCount);
     
     // Setup Pass
     // @ts-ignore
-    const setupPass = setupEpidemicNode(store.getNode('position'), store.getNode('velocity'), store.getNode('infection'), store.getNode('timer'), seedUniform, initialInfectedUniform, recoveryTimeUniform).compute(agentCount);
+    const setupPass = setupEpidemicNode(store.getNode('position'), store.getNode('velocity'), store.getNode('infection'), store.getNode('timer'), seedUniform, initialInfectedUniform, recoveryTimeUniform, agentCountUniform).compute(agentCount);
 
     // Dummy Policy Texture (for legacy flocking logic)
     const policyData = new Uint8Array(100 * 4);
@@ -77,7 +78,7 @@ export default function Home() {
     
     // Node passes
     // @ts-ignore
-    const behaviorPass = flockingBehavior(positions, velocities, policyTex, infection, timer, deltaUniform).compute(agentCount);
+    const flockNode = flockingBehavior(positions, velocities, infection, timer, deltaUniform, agentCountUniform).compute(agentCount);
 
     const passes = [
        grid.getResetNode(),
@@ -87,8 +88,8 @@ export default function Home() {
        grid.getPrefixSumScatterNode(),
        grid.getAgentScatterNode(positions, velocities),
        // @ts-ignore
-       spatialCollisionNode(positions, velocities, grid.nodes.count, grid.nodes.offset, grid.nodes.sortedIndices, grid.nodes.sortedPositions, grid.nodes.sortedVelocities, infection, timer, infectionRadiusUniform, transmissionProbUniform, recoveryTimeUniform, seedUniform, uniform(agentCount)).compute(agentCount),
-       behaviorPass
+       spatialCollisionNode(velocities, infection, timer, grid.nodes.count, grid.nodes.offset, grid.nodes.sortedIndices, grid.nodes.sortedPositions, infectionRadiusUniform, transmissionProbUniform, recoveryTimeUniform, seedUniform, agentCountUniform, deltaUniform).compute(agentCount),
+       flockNode
     ];
     
     const mat = new PointsNodeMaterial();
@@ -118,13 +119,22 @@ export default function Home() {
     // @ts-ignore
     const resetComputeNode = resetAggregate(aggregateBuffer).compute(400);
     // @ts-ignore
-    const telemetryNode = telemetryAggregateNode(positions, velocities, policyTex, aggregateBuffer, infection).compute(agentCount);
+    const telemetryNode = telemetryAggregateNode(positions, velocities, policyTex, aggregateBuffer, infection, agentCountUniform).compute(agentCount);
 
     return { 
        store, grid, material: mat, setupPass, passes,
        resetComputeNode, telemetryNode, aggregateAttribute
     };
   }, [agentCount]);
+
+  // Prevent Massive GPU Memory Leaks when agentCount changes
+  useEffect(() => {
+    return () => {
+      store.dispose();
+      grid.dispose();
+      aggregateAttribute.dispose();
+    };
+  }, [store, grid, aggregateAttribute]);
 
   // Readback references
   const lastReadbackRef = useRef(0);
@@ -134,6 +144,7 @@ export default function Home() {
   const lastFrameDuration = useRef(16);
 
   const renderCallback = async (gl: any, delta: number) => {
+    deltaUniform.value = delta;
     const frameStart = performance.now();
     
     // Throttle telemetry dynamically

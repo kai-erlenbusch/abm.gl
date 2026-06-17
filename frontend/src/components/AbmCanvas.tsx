@@ -2,7 +2,8 @@
 import { useRef, useEffect, useMemo } from 'react';
 import { Canvas, useFrame } from '@react-three/fiber';
 import * as THREE from 'three';
-import { WebGPURenderer } from 'three/webgpu';
+import { WebGPURenderer, Node } from 'three/webgpu';
+Node.captureStackTrace = true;
 import { useSimulationStore } from '@/store/simulationStore';
 
 export interface AbmCanvasProps {
@@ -59,11 +60,15 @@ function AbmEngine({ agentCount, material, setupPass, computePasses, renderCallb
 
   const geometry = useMemo(() => {
       const geo = new THREE.BufferGeometry();
-      geo.setDrawRange(0, agentCount);
-      // Three.js PointsNodeMaterial expects a base position attribute to exist, otherwise positionLocal crashes
-      geo.setAttribute('position', new THREE.BufferAttribute(new Float32Array(agentCount * 3), 3));
+      // Allocate max possible vertices, but we will clamp draw range
+      const dummyPos = new Float32Array(1000000 * 3);
+      geo.setAttribute('position', new THREE.BufferAttribute(dummyPos, 3));
       return geo;
-  }, [agentCount]);
+  }, []);
+
+  useEffect(() => {
+      geometry.setDrawRange(0, agentCount);
+  }, [geometry, agentCount]);
 
   return (
     <points ref={meshRef} args={[geometry, material]}>
@@ -85,7 +90,9 @@ export default function AbmCanvas(props: AbmCanvasProps) {
             const renderer = new WebGPURenderer({ 
                 canvas: actualCanvas as HTMLCanvasElement, 
                 antialias: false, 
-                powerPreference: 'high-performance' 
+                powerPreference: 'high-performance',
+                // @ts-ignore
+                requiredLimits: { maxStorageBuffersPerShaderStage: 16 }
             });
             
             renderer.init().then(() => {
@@ -107,7 +114,18 @@ export default function AbmCanvas(props: AbmCanvasProps) {
             };
             
             renderer.compute = (...args: any[]) => {
-               if (renderer.__initialized) originalCompute(...args);
+                if (renderer.__initialized) {
+                    try {
+                        const result = originalCompute(...args);
+                        if (result && typeof result.catch === 'function') {
+                            result.catch((e: any) => {
+                                // Ignore async rejections
+                            });
+                        }
+                    } catch (e) {
+                        throw e;
+                    }
+               }
             };
 
             return renderer;

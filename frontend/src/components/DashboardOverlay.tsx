@@ -120,6 +120,7 @@ function TelemetryChart() {
   const chartInstanceRef = useRef<any>(null);
   const startTime = useRef(Date.now());
   const [resetKey, setResetKey] = useState(0);
+  const agentCount = useSimulationStore(state => state.dynamicParams.agent_count);
 
   useEffect(() => {
     let isMounted = true;
@@ -180,7 +181,7 @@ function TelemetryChart() {
       }
       chartInstanceRef.current = null;
     };
-  }, [resetKey]);
+  }, [resetKey, agentCount]);
 
   useEffect(() => {
     const handleTelemetry = (e: any) => {

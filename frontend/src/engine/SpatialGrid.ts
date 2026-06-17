@@ -1,6 +1,6 @@
 // @ts-nocheck
 import { StorageBufferAttribute } from 'three/webgpu';
-import { storage, Fn, instanceIndex, uint, atomicStore, atomicAdd, If, clamp, floor, workgroupArray, workgroupBarrier, workgroupId, invocationLocalIndex, Loop, int, max, min, vec2, sqrt, select } from 'three/tsl';
+import { storage, Fn, instanceIndex, uint, atomicStore, atomicAdd, atomicLoad, If, clamp, floor, workgroupArray, workgroupBarrier, workgroupId, invocationLocalIndex, Loop, int, max, min, vec2, sqrt, select } from 'three/tsl';
 
 export class SpatialGrid {
   cellCount: number;
@@ -48,7 +48,6 @@ export class SpatialGrid {
     this.nodes.chunkSums = storage(this.attributes.chunkSums, 'uint', chunkCount);
     this.nodes.sortedIndices = storage(this.attributes.sortedIndices, 'uint', this.agentCount);
     this.nodes.sortedPositions = storage(this.attributes.sortedPositions, 'vec2', this.agentCount);
-    this.nodes.sortedVelocities = storage(this.attributes.sortedVelocities, 'vec2', this.agentCount);
   }
 
   dispose() {
@@ -60,12 +59,14 @@ export class SpatialGrid {
   // --- TSL Primitive Nodes ---
 
   getResetNode() {
-    const { countAtomic, offsetAtomic } = this.nodes;
-    return Fn(() => {
-        const i = instanceIndex;
-        atomicStore(countAtomic.element(i), uint(0));
-        atomicStore(offsetAtomic.element(i), uint(0));
-    })().compute(this.cellCount);
+      const { countAtomic, offset, offsetAtomic } = this.nodes;
+      return Fn(() => {
+          const i = instanceIndex;
+          If(i.lessThan(this.cellCount), () => {
+              atomicStore(countAtomic.element(i), uint(0));
+              atomicStore(offsetAtomic.element(i), uint(0));
+          });
+      })().compute(this.cellCount);
   }
 
   getCountNode(positionsNode: any) {
@@ -77,9 +78,9 @@ export class SpatialGrid {
             const pos = positionsNode.element(i);
             const normX = pos.x.add(25.0);
             const normY = pos.y.add(25.0);
-            const col = clamp(floor(normX.div(0.5)), 0, 99);
-            const row = clamp(floor(normY.div(0.5)), 0, 99);
-            const gridIndex = row.mul(100).add(col);
+            const col = uint(clamp(floor(normX.div(0.5)), 0, 99));
+            const row = uint(clamp(floor(normY.div(0.5)), 0, 99));
+            const gridIndex = row.mul(uint(100)).add(col);
             atomicAdd(countAtomic.element(gridIndex), uint(1));
         });
     })();
@@ -89,13 +90,13 @@ export class SpatialGrid {
   }
 
   getPrefixSumChunkNode() {
-    const { count, offset, chunkSums } = this.nodes;
-    const limit = this.cellCount;
+      const { chunkSums, count, offset } = this.nodes;
+      const limit = this.cellCount;
     const chunkLim = Math.ceil(this.cellCount / 256);
     const compute = Fn(() => {
         const globalId = instanceIndex;
         const localId = invocationLocalIndex;
-        const groupId = workgroupId.x;
+        const groupId = globalId.div(256);
         const sharedArray = workgroupArray('uint', 256);
         
         const c = select(globalId.lessThan(limit), uint(count.element(globalId)), uint(0));
@@ -103,9 +104,9 @@ export class SpatialGrid {
         workgroupBarrier();
         
         for (let off = 1; off < 256; off *= 2) {
-            const i = localId.mul(off * 2).add(off * 2 - 1);
-            If(i.lessThan(256), () => {
-                sharedArray.element(i).addAssign(sharedArray.element(i.sub(off)));
+            const i = localId.mul(uint(off * 2)).add(uint(off * 2 - 1));
+            If(i.lessThan(uint(256)), () => {
+                sharedArray.element(i).addAssign(sharedArray.element(i.sub(uint(off))));
             });
             workgroupBarrier();
         }
@@ -119,10 +120,10 @@ export class SpatialGrid {
         workgroupBarrier();
         
         for (let off = 128; off > 0; off /= 2) {
-            const i = localId.mul(off * 2).add(off * 2 - 1);
-            If(i.lessThan(256), () => {
-                const temp = sharedArray.element(i.sub(off)).toVar();
-                sharedArray.element(i.sub(off)).assign(sharedArray.element(i));
+            const i = localId.mul(uint(off * 2)).add(uint(off * 2 - 1));
+            If(i.lessThan(uint(256)), () => {
+                const temp = sharedArray.element(i.sub(uint(off))).toVar();
+                sharedArray.element(i.sub(uint(off))).assign(sharedArray.element(i));
                 sharedArray.element(i).addAssign(temp);
             });
             workgroupBarrier();
@@ -173,23 +174,21 @@ export class SpatialGrid {
   }
 
   getAgentScatterNode(positionsNode: any, velocitiesNode: any) {
-      const { offsetAtomic, sortedIndices, sortedPositions, sortedVelocities } = this.nodes;
+      const { offsetAtomic, sortedIndices, sortedPositions } = this.nodes;
       const limit = this.agentCount;
       return Fn(() => {
           const i = instanceIndex;
           If(i.lessThan(limit), () => {
               const pos = positionsNode.element(i);
-              const vel = velocitiesNode.element(i);
               const normX = pos.x.add(25.0);
               const normY = pos.y.add(25.0);
-              const col = clamp(floor(normX.div(0.5)), 0, 99);
-              const row = clamp(floor(normY.div(0.5)), 0, 99);
-              const gridIndex = row.mul(100).add(col);
+              const col = uint(clamp(floor(normX.div(0.5)), 0, 99));
+              const row = uint(clamp(floor(normY.div(0.5)), 0, 99));
+              const gridIndex = row.mul(uint(100)).add(col);
               
               const slot = atomicAdd(offsetAtomic.element(gridIndex), uint(1));
               sortedIndices.element(slot).assign(i);
               sortedPositions.element(slot).assign(pos);
-              sortedVelocities.element(slot).assign(vel);
           });
       })().compute(limit);
   }
