@@ -1,6 +1,6 @@
 # abm.gl: The "Unreal Engine" for Agent-Based Modeling
 
-`abm.gl` is a massive-scale, high-performance Agent-Based Modeling (ABM) framework built natively for the web. By leveraging the power of WebGPU Compute Shaders via Three.js (TSL), `abm.gl` shatters traditional CPU limits—simulating and rendering **1,000,000+ autonomous agents at high FPS** entirely within a standard web browser.
+`abm.gl` is a massive-scale, high-performance Agent-Based Modeling (ABM) framework built natively for the web. By leveraging the power of WebGPU Compute Shaders via Three.js (TSL), `abm.gl` shatters traditional CPU limits—simulating and rendering **500,000+ autonomous agents at 30+ FPS** entirely within a standard web browser.
 
 ## The WebGPU Leap: Why Build This?
 
@@ -15,7 +15,7 @@ Historically, massive-scale agent-based modeling required heavy C++/CUDA framewo
 
 ## Quick Start
 
-You can run the entire 1,000,000+ agent simulation locally without a single backend dependency.
+You can run the entire 500,000+ agent simulation locally without a single backend dependency.
 
 ```bash
 git clone https://github.com/kai-erlenbusch/abm.gl
@@ -32,7 +32,7 @@ Open [http://localhost:3000](http://localhost:3000) and click the **SETUP** butt
 ## Architectural Breakdown (Under the Hood)
 
 ### 1. The Death of $O(N^2)$ (Spatial Hashing)
-The core challenge in ABMs is collision detection. If 1,000,000 agents check every other agent, that's 1 trillion checks per frame. `abm.gl` bypasses this by utilizing a **4-Pass Radix Sort directly in the GPU**. 
+The core challenge in ABMs is collision detection. If 500,000 agents check every other agent, that's 250 billion checks per frame. `abm.gl` bypasses this by utilizing a **4-Pass Radix Sort directly in the GPU**. 
 1. The 50x50 world is divided into a 100x100 grid (10,000 cells).
 2. A TSL Compute Shader calculates a **Prefix Sum (Blelloch Scan)** to sort agents into memory buffers based on their spatial grid index.
 3. Agents only query neighbors within their immediate adjacent memory blocks, capping checks at a strict hardware-safe threshold (Volume Exclusion).
@@ -48,7 +48,7 @@ To prove the framework's capability, `abm.gl` implements a full "Susceptible-Inf
 - **Instant Visual State**: React Three Fiber reads the state buffer via TSL `select` nodes to instantaneously render agents as Green (Susceptible), Red (Infected), or Blue (Recovered).
 
 ### 4. Telemetry via GPU Atomic Aggregation
-Streaming the exact state of 1,000,000 agents to the CPU every frame would cripple the main thread. Instead, `abm.gl` executes statistical reduction directly on the GPU.
+Streaming the exact state of 500,000 agents to the CPU every frame would cripple the main thread. Instead, `abm.gl` executes statistical reduction directly on the GPU.
 
 ```mermaid
 sequenceDiagram
@@ -57,7 +57,7 @@ sequenceDiagram
     participant CPU (JS)
     participant Dashboard Chart
     
-    Note over WebGPU Physics: 1,000,000 Agents Moving
+    Note over WebGPU Physics: 500,000 Agents Moving
     WebGPU Atomics->>WebGPU Atomics: Reset Pass (Write 0 to buffer)
     loop Every Agent (Parallel)
         WebGPU Physics->>WebGPU Atomics: atomicAdd( Healthy/Infected/Recovered )

@@ -76,9 +76,14 @@ export default function Home() {
     const infection = store.getNode('infection');
     const timer = store.getNode('timer');
     
+    const positions_next = store.getNextNode('position');
+    const velocities_next = store.getNextNode('velocity');
+    const infection_next = store.getNextNode('infection');
+    const timer_next = store.getNextNode('timer');
+    
     // Node passes
     // @ts-ignore
-    const flockNode = flockingBehavior(positions, velocities, infection, timer, deltaUniform, agentCountUniform).compute(agentCount);
+    const flockNode = flockingBehavior(positions, positions_next, velocities_next, infection_next, timer_next, deltaUniform, agentCountUniform).compute(agentCount);
 
     const passes = [
        grid.getResetNode(),
@@ -88,8 +93,10 @@ export default function Home() {
        grid.getPrefixSumScatterNode(),
        grid.getAgentScatterNode(positions, velocities),
        // @ts-ignore
-       spatialCollisionNode(velocities, infection, timer, grid.nodes.count, grid.nodes.offset, grid.nodes.sortedIndices, grid.nodes.sortedPositions, infectionRadiusUniform, transmissionProbUniform, recoveryTimeUniform, seedUniform, agentCountUniform, deltaUniform).compute(agentCount),
-       flockNode
+       spatialCollisionNode(velocities, velocities_next, infection, infection_next, timer, timer_next, grid.nodes.count, grid.nodes.offset, grid.nodes.sortedIndices, grid.nodes.sortedPositions, infectionRadiusUniform, transmissionProbUniform, recoveryTimeUniform, seedUniform, agentCountUniform, deltaUniform).compute(agentCount),
+       flockNode,
+       // @ts-ignore
+       store.getCopyPassNode(agentCountUniform).compute(agentCount)
     ];
     
     const mat = new PointsNodeMaterial();

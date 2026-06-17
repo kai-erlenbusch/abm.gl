@@ -1,36 +1,35 @@
-This is a [Next.js](https://nextjs.org) project bootstrapped with [`create-next-app`](https://nextjs.org/docs/app/api-reference/cli/create-next-app).
+# abm.gl
+
+abm.gl is a high-performance Agent-Based Modeling (ABM) simulation engine built for the browser. It leverages **WebGPU** via Three.js (TSL - Three Shading Language) to simulate and render up to **1,000,000 agents** simultaneously at 60 FPS.
+
+## Features
+
+- **Massive Scale**: Simulates 1,000,000 agents entirely on the GPU.
+- **WebGPU Compute**: Utilizes Compute Shaders for physics, spatial partitioning, and behavioral logic.
+- **Strict Determinism**: Uses double-buffering (ping-pong state) to ensure all physics calculations are strictly deterministic and free of race conditions.
+- **Spatial Grid Partitioning**: Implements a highly optimized 3-pass parallel prefix sum (Blelloch scan variant) for spatial neighbor lookups, eliminating O(N^2) collision checks.
+- **SIR Epidemic Model**: Real-time simulation of Susceptible, Infected, and Recovered states with configurable transmission probabilities and recovery times.
+- **Flocking & Boids**: GPU-accelerated separation and movement logic.
+- **Real-time Telemetry**: Aggregates population statistics (e.g., infected counts, healthy counts) dynamically via atomic operations on the GPU and bridges them back to React for rendering charts.
+
+## Architecture
+
+- **Frontend**: Next.js 14, React 19, Tailwind CSS.
+- **Graphics & Compute**: Three.js WebGPU renderer (`@react-three/fiber`, `@react-three/drei`), utilizing TSL (`three/tsl`) for compute shader graph definition.
+- **Data Structure**: Structure of Arrays (SoA) layout. All agent data (position, velocity, infection state, timer) are stored in individual `StorageBuffer`s.
 
 ## Getting Started
 
-First, run the development server:
+First, install the dependencies:
+
+```bash
+npm install
+```
+
+Run the development server:
 
 ```bash
 npm run dev
-# or
-yarn dev
-# or
-pnpm dev
-# or
-bun dev
 ```
 
-Open [http://localhost:3000](http://localhost:3000) with your browser to see the result.
-
-You can start editing the page by modifying `app/page.tsx`. The page auto-updates as you edit the file.
-
-This project uses [`next/font`](https://nextjs.org/docs/app/building-your-application/optimizing/fonts) to automatically optimize and load [Geist](https://vercel.com/font), a new font family for Vercel.
-
-## Learn More
-
-To learn more about Next.js, take a look at the following resources:
-
-- [Next.js Documentation](https://nextjs.org/docs) - learn about Next.js features and API.
-- [Learn Next.js](https://nextjs.org/learn) - an interactive Next.js tutorial.
-
-You can check out [the Next.js GitHub repository](https://github.com/vercel/next.js) - your feedback and contributions are welcome!
-
-## Deploy on Vercel
-
-The easiest way to deploy your Next.js app is to use the [Vercel Platform](https://vercel.com/new?utm_medium=default-template&filter=next.js&utm_source=create-next-app&utm_campaign=create-next-app-readme) from the creators of Next.js.
-
-Check out our [Next.js deployment documentation](https://nextjs.org/docs/app/building-your-application/deploying) for more details.
+Open [http://localhost:3000](http://localhost:3000) with your browser to see the simulation. Use the UI panel to tweak transmission probability, infection radius, and agent counts in real-time.
