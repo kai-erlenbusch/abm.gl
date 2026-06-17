@@ -23,6 +23,7 @@ export const useSimulationStore = create<SimulationState>((set) => ({
   
   dynamicParams: {
     agent_count: 100000,
+    world_size: 50.0,
     // Epidemic default params (to keep current canvas running during transition)
     infection_radius: 0.2,
     initial_infected: 100,

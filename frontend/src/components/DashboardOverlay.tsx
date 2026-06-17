@@ -4,8 +4,18 @@ import { useSimulationStore } from '@/store/simulationStore';
 import modelSchema from '../config/modelSchema.json';
 
 function SliderWidget({ control }: { control: any }) {
-  const value = useSimulationStore(state => state.dynamicParams[control.id] ?? control.min);
+  const globalValue = useSimulationStore(state => state.dynamicParams[control.id] ?? control.min);
   const setDynamicParam = useSimulationStore(state => state.setDynamicParam);
+  
+  const [localValue, setLocalValue] = useState(globalValue);
+
+  useEffect(() => {
+    setLocalValue(globalValue);
+  }, [globalValue]);
+
+  const commitValue = () => {
+    setDynamicParam(control.id, localValue);
+  };
 
   return (
     <div className="mb-3">
@@ -13,11 +23,13 @@ function SliderWidget({ control }: { control: any }) {
         <span>{control.label}</span>
         <input 
           type="number" 
-          value={value} 
+          value={localValue} 
           min={control.min} 
           max={control.max} 
           step={control.step || 1}
-          onChange={(e) => setDynamicParam(control.id, parseFloat(e.target.value) || 0)}
+          onChange={(e) => setLocalValue(parseFloat(e.target.value) || 0)}
+          onBlur={commitValue}
+          onKeyDown={(e) => e.key === 'Enter' && commitValue()}
           className="bg-neutral-800 text-right w-16 px-1 rounded border border-neutral-700 outline-none focus:border-emerald-500"
         />
       </div>
@@ -26,8 +38,9 @@ function SliderWidget({ control }: { control: any }) {
         min={control.min} 
         max={control.max} 
         step={control.step || 1}
-        value={value}
-        onChange={(e) => setDynamicParam(control.id, parseFloat(e.target.value))}
+        value={localValue}
+        onChange={(e) => setLocalValue(parseFloat(e.target.value))}
+        onPointerUp={commitValue}
         className="w-full h-1 bg-neutral-800 rounded-lg appearance-none cursor-pointer"
       />
     </div>

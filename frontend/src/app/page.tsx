@@ -10,13 +10,9 @@ import { uniform, positionLocal, vec3, select, uint, vertexIndex, color, storage
 
 import { AgentDataStore } from '@/engine/AgentDataStore';
 import { SpatialGrid } from '@/engine/SpatialGrid';
-import { 
-  setupEpidemicNode, 
-  flockingBehavior, 
-  telemetryAggregateNode, 
-  resetAggregate, 
-  spatialCollisionNode 
-} from '@/components/TslPrimitives';
+import { flockingBehavior } from '@/engine/physics/Boids';
+import { setupEpidemicNode, epidemicCollisionNode } from '@/models/Epidemiology';
+import { telemetryAggregateNode, resetAggregate } from '@/engine/Telemetry';
 
 const AbmCanvas = dynamic(() => import('@/components/AbmCanvas'), {
   ssr: false,
@@ -32,7 +28,14 @@ const AbmCanvas = dynamic(() => import('@/components/AbmCanvas'), {
 
 export default function Home() {
   const agentCount = useSimulationStore(state => state.dynamicParams.agent_count ?? 100000);
-  const dynamicParams = useSimulationStore(state => state.dynamicParams);
+  const worldSize = useSimulationStore(state => state.dynamicParams.world_size ?? 50.0);
+  
+  // Phase 4: Automate Spatial Cell Size (Max Interaction Radius)
+  const infectionRadius = useSimulationStore(state => state.dynamicParams.infection_radius ?? 0.2);
+  const cellSize = Math.max(0.5, infectionRadius * 1.5);
+
+  const gridDimX = Math.ceil(worldSize / cellSize);
+  const gridDimY = Math.ceil(worldSize / cellSize);
 
   // Uniforms
   const infectionRadiusUniform = useMemo(() => uniform(0.2), []);
@@ -41,15 +44,13 @@ export default function Home() {
   const recoveryTimeUniform = useMemo(() => uniform(600.0), []);
   const deltaUniform = useMemo(() => uniform(1.0), []);
   const seedUniform = useMemo(() => uniform(0.0), []);
-
-  useEffect(() => {
-    infectionRadiusUniform.value = dynamicParams.infection_radius ?? 0.2;
-    transmissionProbUniform.value = dynamicParams.transmission_probability ?? 1.0;
-    recoveryTimeUniform.value = dynamicParams.recovery_time ?? 60.0;
-    const n = dynamicParams.initial_infected ?? 100;
-    const density = agentCount / 2500.0;
-    initialInfectedUniform.value = Math.sqrt(n / (density * Math.PI));
-  }, [dynamicParams, agentCount, infectionRadiusUniform, transmissionProbUniform, recoveryTimeUniform, initialInfectedUniform]);
+  
+  // Spatial Scale Uniforms
+  const worldSizeUniform = useMemo(() => uniform(worldSize), []);
+  const worldOffsetUniform = useMemo(() => uniform(worldSize / 2.0), []);
+  const cellSizeUniform = useMemo(() => uniform(cellSize), []);
+  const gridDimXUniform = useMemo(() => uniform(gridDimX), []);
+  const gridDimYUniform = useMemo(() => uniform(gridDimY), []);
 
   const { store, grid, material, setupPass, passes, resetComputeNodeA, telemetryNodeA, aggregateAttributeA, resetComputeNodeB, telemetryNodeB, aggregateAttributeB } = useMemo(() => {
     const store = new AgentDataStore(agentCount);
@@ -58,14 +59,14 @@ export default function Home() {
     store.addProperty('infection', 1, 'uint');
     store.addProperty('timer', 1, 'float');
 
-    const grid = new SpatialGrid(100, 100, agentCount);
+    const grid = new SpatialGrid(gridDimX, gridDimY, agentCount, cellSize);
     const agentCountUniform = uniform(agentCount);
     
     // Setup Pass
     // @ts-ignore
-    const setupPass = setupEpidemicNode(store.getNode('position'), store.getNode('velocity'), store.getNode('infection'), store.getNode('timer'), seedUniform, initialInfectedUniform, recoveryTimeUniform, agentCountUniform).compute(agentCount);
+    const setupPass = setupEpidemicNode(store.getNode('position'), store.getNode('velocity'), store.getNode('infection'), store.getNode('timer'), seedUniform, initialInfectedUniform, recoveryTimeUniform, agentCountUniform, worldSizeUniform).compute(agentCount);
 
-    // Dummy Policy Texture (for legacy flocking logic)
+    // Dummy Policy Texture
     const policyData = new Uint8Array(100 * 4);
     for (let i = 0; i < policyData.length; i += 4) { policyData[i] = 25; policyData[i+3] = 1; }
     const policyTex = new THREE.DataTexture(policyData, 10, 10, THREE.RGBAFormat);
@@ -78,17 +79,17 @@ export default function Home() {
     
     // Node passes
     // @ts-ignore
-    const flockNode = flockingBehavior(positions, velocities, infection, timer, deltaUniform, agentCountUniform).compute(agentCount);
+    const flockNode = flockingBehavior(positions, velocities, infection, timer, deltaUniform, agentCountUniform, worldSizeUniform, worldOffsetUniform).compute(agentCount);
 
     const passes = [
        grid.getResetNode(),
-       grid.getCountNode(positions),
+       grid.getCountNode(positions, worldOffsetUniform, gridDimXUniform, gridDimYUniform, cellSizeUniform),
        grid.getPrefixSumChunkNode(),
        grid.getPrefixSumBlockNode(),
        grid.getPrefixSumScatterNode(),
-       grid.getAgentScatterNode(positions, velocities),
+       grid.getAgentScatterNode(positions, velocities, worldOffsetUniform, gridDimXUniform, gridDimYUniform, cellSizeUniform),
        // @ts-ignore
-       spatialCollisionNode(velocities, infection, timer, grid.nodes.count, grid.nodes.offset, grid.nodes.sortedIndices, grid.nodes.sortedPositions, infectionRadiusUniform, transmissionProbUniform, recoveryTimeUniform, seedUniform, agentCountUniform, deltaUniform).compute(agentCount),
+       epidemicCollisionNode(velocities, infection, timer, grid.nodes.count, grid.nodes.offset, grid.nodes.sortedIndices, grid.nodes.sortedPositions, infectionRadiusUniform, transmissionProbUniform, recoveryTimeUniform, seedUniform, agentCountUniform, deltaUniform, worldOffsetUniform, cellSizeUniform, gridDimXUniform, gridDimYUniform).compute(agentCount),
        flockNode
     ];
     
@@ -117,7 +118,7 @@ export default function Home() {
     // @ts-ignore
     const resetComputeNodeA = resetAggregate(aggregateBufferA).compute(400);
     // @ts-ignore
-    const telemetryNodeA = telemetryAggregateNode(positions, velocities, policyTex, aggregateBufferA, infection, agentCountUniform).compute(agentCount);
+    const telemetryNodeA = telemetryAggregateNode(positions, velocities, policyTex, aggregateBufferA, infection, agentCountUniform, worldSizeUniform, worldOffsetUniform).compute(agentCount);
     telemetryNodeA.workgroupSize = [256, 1, 1];
 
     // @ts-ignore
@@ -127,7 +128,7 @@ export default function Home() {
     // @ts-ignore
     const resetComputeNodeB = resetAggregate(aggregateBufferB).compute(400);
     // @ts-ignore
-    const telemetryNodeB = telemetryAggregateNode(positions, velocities, policyTex, aggregateBufferB, infection, agentCountUniform).compute(agentCount);
+    const telemetryNodeB = telemetryAggregateNode(positions, velocities, policyTex, aggregateBufferB, infection, agentCountUniform, worldSizeUniform, worldOffsetUniform).compute(agentCount);
     telemetryNodeB.workgroupSize = [256, 1, 1];
 
     return { 
@@ -135,7 +136,7 @@ export default function Home() {
        resetComputeNodeA, telemetryNodeA, aggregateAttributeA,
        resetComputeNodeB, telemetryNodeB, aggregateAttributeB
     };
-  }, [agentCount]);
+  }, [agentCount, worldSize, cellSize]);
 
   // Prevent Massive GPU Memory Leaks when agentCount changes
   useEffect(() => {
@@ -144,8 +145,9 @@ export default function Home() {
       grid.dispose();
       aggregateAttributeA.dispose();
       aggregateAttributeB.dispose();
+      material.dispose();
     };
-  }, [store, grid, aggregateAttributeA, aggregateAttributeB]);
+  }, [store, grid, aggregateAttributeA, aggregateAttributeB, material]);
 
   // Readback references
   const frameIndexRef = useRef(0);
@@ -155,7 +157,33 @@ export default function Home() {
   const lastFrameDuration = useRef(16);
 
   const renderCallback = async (gl: any, delta: number) => {
+    const state = useSimulationStore.getState();
+    const params = state.dynamicParams;
+    
+    // Phase 3: Concurrent Sync & Dynamic Scale Sync
+    infectionRadiusUniform.value = params.infection_radius ?? 0.2;
+    transmissionProbUniform.value = params.transmission_probability ?? 1.0;
+    recoveryTimeUniform.value = params.recovery_time ?? 60.0;
+    
+    const wSize = params.world_size ?? 50.0;
+    
+    // Phase 4: Automate Spatial Cell Size
+    const currentInfectionRadius = params.infection_radius ?? 0.2;
+    const cSize = Math.max(0.5, currentInfectionRadius * 1.5);
+    
+    const density = agentCount / (wSize * wSize);
+    const n = params.initial_infected ?? 100;
+    initialInfectedUniform.value = Math.sqrt(n / (density * Math.PI));
+    
+    worldSizeUniform.value = wSize;
+    worldOffsetUniform.value = wSize / 2.0;
+    cellSizeUniform.value = cSize;
+    gridDimXUniform.value = Math.ceil(wSize / cSize);
+    gridDimYUniform.value = Math.ceil(wSize / cSize);
+
     deltaUniform.value = delta;
+    seedUniform.value = Math.random(); // Phase 2: Fix PRNG Stagnation
+
     const frameStart = performance.now();
     
     const currentFrame = frameIndexRef.current++;
@@ -208,7 +236,7 @@ export default function Home() {
             }
             
             const globalAvgSpeed = totalCount > 0 ? totalSpeed / totalCount : 0;
-            let policyScalar = 0.1; // Hardcoded default for the moment since policy maps are simplified
+            let policyScalar = 0.1;
             
             window.dispatchEvent(new CustomEvent('abm-telemetry', {
                 detail: {

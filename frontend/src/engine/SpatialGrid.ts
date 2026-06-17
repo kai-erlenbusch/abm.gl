@@ -1,16 +1,28 @@
 // @ts-nocheck
 import { StorageBufferAttribute } from 'three/webgpu';
-import { storage, Fn, instanceIndex, uint, atomicStore, atomicAdd, atomicLoad, If, clamp, floor, workgroupArray, workgroupBarrier, workgroupId, invocationLocalIndex, Loop, int, max, min, vec2, sqrt, select } from 'three/tsl';
+import { storage } from 'three/tsl';
+import { spatialResetNode, spatialCountNode, spatialScatterNode } from './parallel/SpatialHash';
+import { spatialPrefixSum_ChunkNode, spatialPrefixSum_BlockNode, spatialPrefixSum_ScatterNode } from './parallel/PrefixSum';
 
 export class SpatialGrid {
   cellCount: number;
   agentCount: number;
+  gridSizeX: number;
+  gridSizeY: number;
+  cellSize: number;
   
   attributes: Record<string, StorageBufferAttribute>;
   nodes: Record<string, any>;
 
-  constructor(gridSizeX: number, gridSizeY: number, agentCount: number) {
-    this.cellCount = gridSizeX * gridSizeY;
+  constructor(gridSizeX: number, gridSizeY: number, agentCount: number, cellSize: number = 0.5) {
+    this.gridSizeX = gridSizeX;
+    this.gridSizeY = gridSizeY;
+    this.cellSize = cellSize;
+    
+    // Directive B: Prefix Sum 256-Padding Math
+    const rawCellCount = gridSizeX * gridSizeY;
+    this.cellCount = Math.ceil(rawCellCount / 256) * 256;
+    
     this.agentCount = agentCount;
     this.attributes = {};
     this.nodes = {};
@@ -19,14 +31,12 @@ export class SpatialGrid {
   }
 
   initBuffers() {
-    // Spatial Grid Buffers
     const cellCountArray = new Uint32Array(this.cellCount);
     const cellOffsetArray = new Uint32Array(this.cellCount);
     const cellOffsetAtomicArray = new Uint32Array(this.cellCount);
     const chunkCount = Math.ceil(this.cellCount / 256);
     const chunkSumsArray = new Uint32Array(chunkCount);
     
-    // Sorted Agent Output
     const sortedAgentArray = new Uint32Array(this.agentCount);
     const sortedPosArray = new Float32Array(this.agentCount * 2);
     const sortedVelArray = new Float32Array(this.agentCount * 2);
@@ -48,6 +58,7 @@ export class SpatialGrid {
     this.nodes.chunkSums = storage(this.attributes.chunkSums, 'uint', chunkCount);
     this.nodes.sortedIndices = storage(this.attributes.sortedIndices, 'uint', this.agentCount);
     this.nodes.sortedPositions = storage(this.attributes.sortedPositions, 'vec2', this.agentCount);
+    this.nodes.sortedVelocities = storage(this.attributes.sortedVelocities, 'vec2', this.agentCount);
   }
 
   dispose() {
@@ -56,84 +67,23 @@ export class SpatialGrid {
     }
   }
 
-  // --- TSL Primitive Nodes ---
-
+  // --- Wrapper passes ---
   getResetNode() {
-      const { countAtomic, offset, offsetAtomic } = this.nodes;
-      return Fn(() => {
-          const i = instanceIndex;
-          If(i.lessThan(this.cellCount), () => {
-              atomicStore(countAtomic.element(i), uint(0));
-              atomicStore(offsetAtomic.element(i), uint(0));
-          });
-      })().compute(this.cellCount);
+      const { countAtomic, offsetAtomic } = this.nodes;
+      const pass = spatialResetNode(countAtomic, offsetAtomic, this.cellCount).compute(this.cellCount);
+      return pass;
   }
 
-  getCountNode(positionsNode: any) {
+  getCountNode(positionsNode: any, worldOffsetNode: any, gridDimXNode: any, gridDimYNode: any, cellSizeNode: any) {
     const { countAtomic } = this.nodes;
-    const limit = this.agentCount;
-    const compute = Fn(() => {
-        const i = instanceIndex;
-        If(i.lessThan(limit), () => {
-            const pos = positionsNode.element(i);
-            const normX = pos.x.add(25.0);
-            const normY = pos.y.add(25.0);
-            const col = uint(clamp(floor(normX.div(0.5)), 0, 99));
-            const row = uint(clamp(floor(normY.div(0.5)), 0, 99));
-            const gridIndex = row.mul(uint(100)).add(col);
-            atomicAdd(countAtomic.element(gridIndex), uint(1));
-        });
-    })();
-    const pass = compute.compute(limit);
+    const pass = spatialCountNode(positionsNode, countAtomic, this.agentCount, worldOffsetNode, cellSizeNode, gridDimXNode, gridDimYNode).compute(this.agentCount);
     pass.workgroupSize = [256, 1, 1];
     return pass;
   }
 
   getPrefixSumChunkNode() {
-      const { chunkSums, count, offset } = this.nodes;
-      const limit = this.cellCount;
-    const chunkLim = Math.ceil(this.cellCount / 256);
-    const compute = Fn(() => {
-        const globalId = instanceIndex;
-        const localId = invocationLocalIndex;
-        const groupId = globalId.div(256);
-        const sharedArray = workgroupArray('uint', 256);
-        
-        const c = select(globalId.lessThan(limit), uint(count.element(globalId)), uint(0));
-        sharedArray.element(localId).assign(c);
-        workgroupBarrier();
-        
-        for (let off = 1; off < 256; off *= 2) {
-            const i = localId.mul(uint(off * 2)).add(uint(off * 2 - 1));
-            If(i.lessThan(uint(256)), () => {
-                sharedArray.element(i).addAssign(sharedArray.element(i.sub(uint(off))));
-            });
-            workgroupBarrier();
-        }
-        
-        If(localId.equal(255), () => {
-            If(groupId.lessThan(chunkLim), () => {
-                chunkSums.element(groupId).assign(sharedArray.element(uint(255)));
-            });
-            sharedArray.element(uint(255)).assign(uint(0));
-        });
-        workgroupBarrier();
-        
-        for (let off = 128; off > 0; off /= 2) {
-            const i = localId.mul(uint(off * 2)).add(uint(off * 2 - 1));
-            If(i.lessThan(uint(256)), () => {
-                const temp = sharedArray.element(i.sub(uint(off))).toVar();
-                sharedArray.element(i.sub(uint(off))).assign(sharedArray.element(i));
-                sharedArray.element(i).addAssign(temp);
-            });
-            workgroupBarrier();
-        }
-        
-        If(globalId.lessThan(limit), () => {
-            offset.element(globalId).assign(sharedArray.element(localId));
-        });
-    })();
-    const pass = compute.compute(limit);
+    const { chunkSums, count, offset } = this.nodes;
+    const pass = spatialPrefixSum_ChunkNode(count, offset, chunkSums, this.cellCount).compute(this.cellCount);
     pass.workgroupSize = [256, 1, 1];
     return pass;
   }
@@ -141,55 +91,20 @@ export class SpatialGrid {
   getPrefixSumBlockNode() {
       const { chunkSums } = this.nodes;
       const chunkLim = Math.ceil(this.cellCount / 256);
-      return Fn(() => {
-          const i = instanceIndex;
-          If(i.equal(uint(0)), () => {
-              const sum = uint(0).toVar();
-              Loop(chunkLim, ({ i: j }) => {
-                  const jUint = uint(j);
-                  const c = uint(chunkSums.element(jUint));
-                  chunkSums.element(jUint).assign(sum);
-                  sum.addAssign(c);
-              });
-          });
-      })().compute(1);
+      return spatialPrefixSum_BlockNode(chunkSums, chunkLim).compute(1);
   }
 
   getPrefixSumScatterNode() {
       const { offset, offsetAtomic, chunkSums } = this.nodes;
-      const limit = this.cellCount;
-      const compute = Fn(() => {
-          const globalId = instanceIndex;
-          const groupId = workgroupId.x;
-          If(globalId.lessThan(limit), () => {
-              const blockOffset = chunkSums.element(groupId);
-              const finalOffset = offset.element(globalId).add(blockOffset);
-              offset.element(globalId).assign(finalOffset);
-              atomicStore(offsetAtomic.element(globalId), finalOffset);
-          });
-      })();
-      const pass = compute.compute(limit);
+      const pass = spatialPrefixSum_ScatterNode(offset, offsetAtomic, chunkSums, this.cellCount).compute(this.cellCount);
       pass.workgroupSize = [256, 1, 1];
       return pass;
   }
 
-  getAgentScatterNode(positionsNode: any, velocitiesNode: any) {
-      const { offsetAtomic, sortedIndices, sortedPositions } = this.nodes;
-      const limit = this.agentCount;
-      return Fn(() => {
-          const i = instanceIndex;
-          If(i.lessThan(limit), () => {
-              const pos = positionsNode.element(i);
-              const normX = pos.x.add(25.0);
-              const normY = pos.y.add(25.0);
-              const col = uint(clamp(floor(normX.div(0.5)), 0, 99));
-              const row = uint(clamp(floor(normY.div(0.5)), 0, 99));
-              const gridIndex = row.mul(uint(100)).add(col);
-              
-              const slot = atomicAdd(offsetAtomic.element(gridIndex), uint(1));
-              sortedIndices.element(slot).assign(i);
-              sortedPositions.element(slot).assign(pos);
-          });
-      })().compute(limit);
+  getAgentScatterNode(positionsNode: any, velocitiesNode: any, worldOffsetNode: any, gridDimXNode: any, gridDimYNode: any, cellSizeNode: any) {
+      const { offsetAtomic, sortedIndices, sortedPositions, sortedVelocities } = this.nodes;
+      const pass = spatialScatterNode(positionsNode, velocitiesNode, offsetAtomic, sortedIndices, sortedPositions, sortedVelocities, this.agentCount, worldOffsetNode, cellSizeNode, gridDimXNode, gridDimYNode).compute(this.agentCount);
+      pass.workgroupSize = [256, 1, 1];
+      return pass;
   }
 }

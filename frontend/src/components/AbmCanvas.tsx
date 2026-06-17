@@ -70,6 +70,12 @@ function AbmEngine({ agentCount, material, setupPass, computePasses, renderCallb
       geometry.setDrawRange(0, agentCount);
   }, [geometry, agentCount]);
 
+  useEffect(() => {
+      return () => {
+          geometry.dispose();
+      };
+  }, [geometry]);
+
   return (
     <points ref={meshRef} args={[geometry, material]}>
       {material && <primitive object={material} attach="material" />}
@@ -79,6 +85,8 @@ function AbmEngine({ agentCount, material, setupPass, computePasses, renderCallb
 
 // Global renderer instance trick to work with R3F
 let globalRenderer: any = null;
+
+import { MapControls } from '@react-three/drei';
 
 export default function AbmCanvas(props: AbmCanvasProps) {
   return (
@@ -131,6 +139,7 @@ export default function AbmCanvas(props: AbmCanvasProps) {
             return renderer;
         }}
       >
+        <MapControls makeDefault zoomToCursor={true} enableDamping={true} dampingFactor={0.05} />
         <color attach="background" args={['#0a0a0a']} />
         <AbmEngine {...props} />
       </Canvas>

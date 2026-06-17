@@ -79,6 +79,11 @@ The React frontend completely wraps the simulation in an interactive HUD.
 - **Zero-Render Heatmaps**: The 10x10 Spatial Density Grid relies on raw DOM mutation via `ref` attachments, avoiding React GC spikes and re-render lag while providing a 10Hz heatmap of the viral spread.
 - **ChartGPU**: Native WebGL line charts track the live total counts of the SIR populations seamlessly.
 
+### 6. Scientific Observability & Camera Controls
+The `abm.gl` viewport uses `@react-three/drei`'s `MapControls` to provide a truly explorable simulation environment.
+- **Limitless Pan & Zoom**: Users can expand the simulation world boundary dynamically, and use mouse/trackpad controls to dive into dense clusters or pull back for macro-scale views.
+- **Abstracted Spatial Architecture**: The engine completely abstracts GPU optimization constraints from the user interface. The `Spatial Hash Cell Size` is dynamically computed on the fly based on the model's `max_interaction_radius` (e.g., the Infection Radius), ensuring the Prefix Sum radix sorting algorithm always runs with perfectly allocated memory chunks regardless of how the user tunes the physics parameters.
+
 ---
 
 ## Project Structure
