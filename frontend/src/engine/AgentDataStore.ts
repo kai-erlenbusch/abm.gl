@@ -52,19 +52,25 @@ export class AgentDataStore {
   // Swaps State A and State B (conceptually, by dispatching a copy or flipping pointers in a real engine)
   // In WebGPU TSL, we can just write a compute pass to copy next -> current.
   getCopyPassNode(agentCountLimit: any) {
-     const keys = Object.keys(this.attributes).filter(k => !k.endsWith('_next'));
-     const primaryNodes = keys.map(k => this.nodes[k]);
-     const nextNodes = keys.map(k => this.nodes[`${k}_next`]);
+     const p_pos = this.nodes['position'];
+     const n_pos = this.nodes['position_next'];
+     const p_vel = this.nodes['velocity'];
+     const n_vel = this.nodes['velocity_next'];
+     const p_inf = this.nodes['infection'];
+     const n_inf = this.nodes['infection_next'];
+     const p_tim = this.nodes['timer'];
+     const n_tim = this.nodes['timer_next'];
      
      // @ts-ignore
      const copyFn = Fn(() => {
-        // @ts-ignore
-        const i = instanceIndex;
-        If(i.lessThan(agentCountLimit), () => {
-            for (let j = 0; j < keys.length; j++) {
-                primaryNodes[j].element(i).assign(nextNodes[j].element(i));
-            }
-        });
+         // @ts-ignore
+         const i = instanceIndex;
+         If(i.lessThan(agentCountLimit), () => {
+             p_pos.element(i).assign(n_pos.element(i));
+             p_vel.element(i).assign(n_vel.element(i));
+             p_inf.element(i).assign(n_inf.element(i));
+             p_tim.element(i).assign(n_tim.element(i));
+         });
      });
      
      return copyFn();
