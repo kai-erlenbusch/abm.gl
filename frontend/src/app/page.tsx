@@ -51,7 +51,7 @@ export default function Home() {
     initialInfectedUniform.value = Math.sqrt(n / (density * Math.PI));
   }, [dynamicParams, agentCount, infectionRadiusUniform, transmissionProbUniform, recoveryTimeUniform, initialInfectedUniform]);
 
-  const { store, grid, material, setupPass, passes, resetComputeNode, telemetryNode, aggregateAttribute } = useMemo(() => {
+  const { store, grid, material, setupPass, passes, resetComputeNodeA, telemetryNodeA, aggregateAttributeA, resetComputeNodeB, telemetryNodeB, aggregateAttributeB } = useMemo(() => {
     const store = new AgentDataStore(agentCount);
     store.addProperty('position', 2, 'vec2');
     store.addProperty('velocity', 2, 'vec2');
@@ -110,20 +110,30 @@ export default function Home() {
     );
     
     // --- Telemetry & Aggregation ---
-    const aggregateData = new Uint32Array(400);
     // @ts-ignore
-    const aggregateAttribute = new StorageBufferAttribute(aggregateData, 1);
+    const aggregateAttributeA = new StorageBufferAttribute(new Uint32Array(400), 1);
     // @ts-ignore
-    const aggregateBuffer = storage(aggregateAttribute, 'uint', aggregateData.length).toAtomic();
-    
+    const aggregateBufferA = storage(aggregateAttributeA, 'uint', 400).toAtomic();
     // @ts-ignore
-    const resetComputeNode = resetAggregate(aggregateBuffer).compute(400);
+    const resetComputeNodeA = resetAggregate(aggregateBufferA).compute(400);
     // @ts-ignore
-    const telemetryNode = telemetryAggregateNode(positions, velocities, policyTex, aggregateBuffer, infection, agentCountUniform).compute(agentCount);
+    const telemetryNodeA = telemetryAggregateNode(positions, velocities, policyTex, aggregateBufferA, infection, agentCountUniform).compute(agentCount);
+    telemetryNodeA.workgroupSize = [256, 1, 1];
+
+    // @ts-ignore
+    const aggregateAttributeB = new StorageBufferAttribute(new Uint32Array(400), 1);
+    // @ts-ignore
+    const aggregateBufferB = storage(aggregateAttributeB, 'uint', 400).toAtomic();
+    // @ts-ignore
+    const resetComputeNodeB = resetAggregate(aggregateBufferB).compute(400);
+    // @ts-ignore
+    const telemetryNodeB = telemetryAggregateNode(positions, velocities, policyTex, aggregateBufferB, infection, agentCountUniform).compute(agentCount);
+    telemetryNodeB.workgroupSize = [256, 1, 1];
 
     return { 
        store, grid, material: mat, setupPass, passes,
-       resetComputeNode, telemetryNode, aggregateAttribute
+       resetComputeNodeA, telemetryNodeA, aggregateAttributeA,
+       resetComputeNodeB, telemetryNodeB, aggregateAttributeB
     };
   }, [agentCount]);
 
@@ -132,12 +142,13 @@ export default function Home() {
     return () => {
       store.dispose();
       grid.dispose();
-      aggregateAttribute.dispose();
+      aggregateAttributeA.dispose();
+      aggregateAttributeB.dispose();
     };
-  }, [store, grid, aggregateAttribute]);
+  }, [store, grid, aggregateAttributeA, aggregateAttributeB]);
 
   // Readback references
-  const lastReadbackRef = useRef(0);
+  const frameIndexRef = useRef(0);
   const readbackPendingRef = useRef(false);
   const aggregateDataRef = useRef(new Uint32Array(400));
   const gridRef = useRef(Array.from({ length: 10 }, () => Array.from({ length: 10 }, () => ({ density: 0, average_speed: 0, infected_count: 0, recovered_count: 0 }))));
@@ -147,18 +158,25 @@ export default function Home() {
     deltaUniform.value = delta;
     const frameStart = performance.now();
     
-    // Throttle telemetry dynamically
-    const readbackInterval = lastFrameDuration.current > 33 ? 500 : 100;
+    const currentFrame = frameIndexRef.current++;
+    const isEven = currentFrame % 2 === 0;
+
+    // Dispatch compute for the CURRENT frame
+    if (isEven) {
+        gl.compute(resetComputeNodeA);
+        gl.compute(telemetryNodeA);
+    } else {
+        gl.compute(resetComputeNodeB);
+        gl.compute(telemetryNodeB);
+    }
     
-    if (frameStart - lastReadbackRef.current > readbackInterval && !readbackPendingRef.current) {
-        lastReadbackRef.current = frameStart;
+    // Readback the PREVIOUS frame's buffer
+    if (currentFrame > 0 && !readbackPendingRef.current) {
         readbackPendingRef.current = true;
         
         try {
-            gl.compute(resetComputeNode);
-            gl.compute(telemetryNode);
-            
-            const buffer = await gl.backend.getArrayBufferAsync(aggregateAttribute);
+            const attrToRead = isEven ? aggregateAttributeB : aggregateAttributeA;
+            const buffer = await gl.backend.getArrayBufferAsync(attrToRead);
             aggregateDataRef.current.set(new Uint32Array(buffer));
             const aggregateData = aggregateDataRef.current;
             

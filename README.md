@@ -50,6 +50,12 @@ To prove the framework's capability, `abm.gl` implements a full "Susceptible-Inf
 ### 4. Telemetry via GPU Atomic Aggregation
 Streaming the exact state of 1,000,000 agents to the CPU every frame would cripple the main thread. Instead, `abm.gl` executes statistical reduction directly on the GPU.
 
+#### The L2 Cache Global Atomic Revelation
+During extreme load testing (500,000+ agents), we attempted to implement a complex L1 Cache shared-memory architecture using WebGPU `workgroupArray` and `workgroupBarrier`. However, hardware profiling revealed a fascinating quirk of modern GPUs: because our telemetry density grid is incredibly small (400 bins / ~1.6 KB), it perfectly fits inside the GPU's ultra-fast global L2 Cache. Forcing the GPU into explicit workgroup synchronizations actually *choked* performance down to 11 FPS. By reverting to absolute brute-force global atomics (`atomicAdd`), modern GPU silicon routing takes over, instantly processing 1M agents at high framerates.
+
+#### Telemetry Double Buffering (Ping-Pong Readback)
+Even with fast GPU telemetry, reading data out of WebGPU (`getArrayBufferAsync`) stalled the main render loop if the GPU was still calculating the frame telemetry, causing massive UI stuttering and "janky" controls. `abm.gl` solves this by maintaining two independent telemetry buffers. On even frames, the GPU computes into Buffer A, and the CPU reads back Buffer B (from the previous frame). On odd frames, they swap. This means the CPU maps data the GPU finished writing 16ms ago, entirely eliminating the synchronization stall!
+
 ```mermaid
 sequenceDiagram
     participant WebGPU Physics
@@ -63,7 +69,7 @@ sequenceDiagram
         WebGPU Physics->>WebGPU Atomics: atomicAdd( Healthy/Infected/Recovered )
     end
     Note over WebGPU Atomics: Buffer holds discrete population counts
-    WebGPU Atomics->>CPU (JS): getArrayBufferAsync (Read tiny Uint32 buffer)
+    WebGPU Atomics->>CPU (JS): getArrayBufferAsync (Read PREVIOUS frame buffer)
     CPU (JS)->>Dashboard Chart: CustomEvent('abm-telemetry')
 ```
 

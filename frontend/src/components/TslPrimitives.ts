@@ -2,7 +2,7 @@ import {
     Fn, float, vec3, abs, If, Loop, instanceIndex, uint, int,
     atomicAdd, atomicLoad, atomicStore, min, max,
     workgroupBarrier, workgroupId, workgroupArray, clamp, floor, ceil,
-    fract, sin, length, texture, vec2, Break, invocationLocalIndex, mod, select, sqrt
+    fract, sin, length, texture, vec2, Break, invocationLocalIndex, mod, select, sqrt, wgslFn
 } from 'three/tsl';
 
 export const prngHash = Fn(([seed]) => {
@@ -48,38 +48,30 @@ export const flockingBehavior = Fn(([positions, velocities, infectionBuffer, tim
 });
 
 export const telemetryAggregateNode = Fn(([positions, velocities, policyMapTexture, aggregateBuffer, infectionBuffer, agentCountLimit]: any) => {
-    const i = instanceIndex;
-    If(i.lessThan(agentCountLimit), () => {
-        const pos = positions.element(i);
-        const vel = velocities.element(i);
-        
-        const u = clamp(pos.x.add(25.0).div(50.0), 0.0, 1.0);
-        const v = clamp(pos.y.add(25.0).div(50.0), 0.0, 1.0);
-        const speedLocal = float(1.0);
+    const globalId = instanceIndex;
 
-        // Divide 50x50 world (-25 to 25) into 10x10 grid. Each cell is 5x5.
+    If(globalId.lessThan(agentCountLimit), () => {
+        const pos = positions.element(globalId);
+        const vel = velocities.element(globalId);
+        const myInfection = infectionBuffer.element(globalId);
+        
         const normX = pos.x.add(25.0);
         const normY = float(25.0).sub(pos.y);
         
-        const col = floor(normX.div(5.0));
-        const row = floor(normY.div(5.0));
+        const col = uint(clamp(floor(normX.div(5.0)), 0.0, 9.0));
+        const row = uint(clamp(floor(normY.div(5.0)), 0.0, 9.0));
         
-        const safeCol = uint(clamp(col, 0, 9));
-        const safeRow = uint(clamp(row, 0, 9));
-        
-        const gridIndex = safeRow.mul(uint(10)).add(safeCol);
+        const gridIndex = row.mul(uint(10)).add(col);
         const speedIndex = gridIndex.mul(uint(4));
-        const countIndex = gridIndex.mul(uint(4)).add(uint(1));
-        const infectedIndex = gridIndex.mul(uint(4)).add(uint(2));
-        const recoveredIndex = gridIndex.mul(uint(4)).add(uint(3));
-
-        const speed = length(vel).mul(speedLocal);
+        const countIndex = speedIndex.add(uint(1));
+        const infectedIndex = speedIndex.add(uint(2));
+        const recoveredIndex = speedIndex.add(uint(3));
         
-        const myInfection = infectionBuffer.element(i);
+        const speed = length(vel);
+        
         const isInfected = select(myInfection.equal(uint(1)), uint(1), uint(0));
         const isRecovered = select(myInfection.equal(uint(2)), uint(1), uint(0));
-
-        // Accumulate speed (scaled by 100) and agent counts per cell
+        
         atomicAdd(aggregateBuffer.element(speedIndex), uint(speed.mul(100.0)));
         atomicAdd(aggregateBuffer.element(countIndex), uint(1));
         atomicAdd(aggregateBuffer.element(infectedIndex), isInfected);
