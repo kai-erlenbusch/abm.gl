@@ -119,9 +119,11 @@ function TelemetryChart() {
   const containerRef = useRef<HTMLDivElement>(null);
   const chartInstanceRef = useRef<any>(null);
   const startTime = useRef(Date.now());
+  const [resetKey, setResetKey] = useState(0);
 
   useEffect(() => {
     let isMounted = true;
+    startTime.current = Date.now();
     
     async function initChart() {
       if (!containerRef.current) return;
@@ -131,20 +133,28 @@ function TelemetryChart() {
         const chart = await ChartGPU.create(containerRef.current, {
           series: [
             { 
-              name: 'Actual Speed',
+              name: 'Healthy',
               type: 'line', 
               data: [], 
               sampling: 'none',
               // @ts-ignore
-              style: { color: '#00ffcc', lineWidth: 2 } 
+              style: { color: '#10b981', lineWidth: 2 } // emerald-500
             },
             { 
-              name: 'Policy Speed',
+              name: 'Infected',
               type: 'line', 
               data: [], 
               sampling: 'none',
               // @ts-ignore
-              style: { color: '#ff0055', lineWidth: 2, lineDash: [5, 5] } 
+              style: { color: '#ef4444', lineWidth: 2 } // red-500
+            },
+            { 
+              name: 'Recovered',
+              type: 'line', 
+              data: [], 
+              sampling: 'none',
+              // @ts-ignore
+              style: { color: '#3b82f6', lineWidth: 2 } // blue-500
             }
           ],
         });
@@ -170,21 +180,22 @@ function TelemetryChart() {
       }
       chartInstanceRef.current = null;
     };
-  }, []);
+  }, [resetKey]);
 
   useEffect(() => {
     const handleTelemetry = (e: any) => {
       if (!chartInstanceRef.current) return;
       
-      const { timestamp, actual_speed, policy_speed } = e.detail;
+      const { timestamp, total_healthy, total_infected, total_recovered } = e.detail;
       const elapsed = (timestamp - startTime.current) / 1000; // seconds
 
       const currentIsPaused = useSimulationStore.getState().isPaused;
 
       if (!currentIsPaused) {
         if (typeof chartInstanceRef.current.appendData === 'function') {
-          chartInstanceRef.current.appendData(0, [[elapsed, actual_speed]]);
-          chartInstanceRef.current.appendData(1, [[elapsed, policy_speed]]);
+          chartInstanceRef.current.appendData(0, [[elapsed, total_healthy || 0]]);
+          chartInstanceRef.current.appendData(1, [[elapsed, total_infected || 0]]);
+          chartInstanceRef.current.appendData(2, [[elapsed, total_recovered || 0]]);
         }
       }
     };
@@ -197,10 +208,18 @@ function TelemetryChart() {
   }, []);
 
   return (
-    <>
+    <div className="relative">
+      <div className="absolute top-0 right-0 z-10 flex gap-2">
+        <button 
+           onClick={() => setResetKey(k => k + 1)}
+           className="text-[10px] bg-neutral-800 hover:bg-neutral-700 text-neutral-400 px-2 py-0.5 rounded border border-neutral-700 transition-colors"
+        >
+           ↺ RESET
+        </button>
+      </div>
       <FPSMeter />
       <div ref={containerRef} className="w-full h-48 mt-2" />
-    </>
+    </div>
   );
 }
 

@@ -339,11 +339,15 @@ export const setupEpidemicNode = Fn(([positions, velocities, infectionBuffer, ti
     const r4 = pcgHash(seedBase.mul(93.989));
 
     // Place randomly across the whole board
-    pos.x.assign(r1.sub(0.5).mul(50.0));
-    pos.y.assign(r2.sub(0.5).mul(50.0));
+    pos.assign(vec2(
+        r1.sub(0.5).mul(50.0),
+        r2.sub(0.5).mul(50.0)
+    ));
 
-    vel.x.assign(r3.sub(0.5).mul(2.0));
-    vel.y.assign(r4.sub(0.5).mul(2.0));
+    vel.assign(vec2(
+        r3.sub(0.5).mul(2.0),
+        r4.sub(0.5).mul(2.0)
+    ));
 
     // Phase 8: Ground Zero Seeding
     const dist = length(pos);

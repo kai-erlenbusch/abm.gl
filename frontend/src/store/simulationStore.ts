@@ -1,15 +1,15 @@
 import { create } from 'zustand';
 
+export interface ModelConfig {
+  [key: string]: number;
+}
+
 interface SimulationState {
   isPaused: boolean;
   setIsPaused: (val: boolean) => void;
-  isMacroThinking: boolean;
-  setIsMacroThinking: (val: boolean) => void;
-  lastLlmSend: number;
-  setLastLlmSend: (time: number) => void;
   
-  // Dynamic parameters mapped from UI
-  dynamicParams: Record<string, number>;
+  // Generic parameters mapped from UI
+  dynamicParams: ModelConfig;
   setDynamicParam: (key: string, value: number) => void;
 
   // Setup trigger
@@ -20,12 +20,10 @@ interface SimulationState {
 export const useSimulationStore = create<SimulationState>((set) => ({
   isPaused: false,
   setIsPaused: (val: boolean) => set({ isPaused: val }),
-  isMacroThinking: false,
-  setIsMacroThinking: (val: boolean) => set({ isMacroThinking: val }),
-  lastLlmSend: 0,
-  setLastLlmSend: (time: number) => set({ lastLlmSend: time }),
   
   dynamicParams: {
+    agent_count: 100000,
+    // Epidemic default params (to keep current canvas running during transition)
     infection_radius: 0.2,
     initial_infected: 100,
     transmission_probability: 0.0,

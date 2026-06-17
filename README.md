@@ -1,185 +1,86 @@
-# abm.gl GOALS & ROADMAP
+# abm.gl: The "Unreal Engine" for Agent-Based Modeling
 
-The "Unreal Engine" for complex adaptive systems and Agent-Based Modeling. `abm.gl` is a Hybrid Macro/Micro architecture designed to bypass the traditional Python/JVM bottlenecks by moving massive-scale physics to WebGPU, while retaining Python for cognitive LLM-based agents.
+`abm.gl` is a massive-scale, high-performance Agent-Based Modeling (ABM) framework built natively for the web. By leveraging the power of WebGPU Compute Shaders via Three.js (TSL), `abm.gl` shatters traditional CPU limits—simulating and rendering **500,000+ autonomous agents at 30+ FPS** entirely within a standard web browser.
 
-## Key Features
-- **Micro Engine (Brawn)**: 1,000,000+ deterministic agents running simultaneously at 60fps via Three.js (TSL) Compute Shaders.
-- **Macro Engine (Brain)**: Institutional LLM-powered agents (via Shachi) that analyze aggregate data and dispatch global policy.
-- **Lockstep Time**: Scientific reproducibility by pausing the physical GPU simulation during LLM inference.
+## The WebGPU Leap: Why Build This?
 
-## Tech Stack
-- **Backend**: Python 3.12+, FastAPI, Shachi (litellm), Pydantic
-- **Frontend**: Next.js 15, React Three Fiber, Three.js (WebGPU/TSL)
-- **Bridge**: WebSockets
+Historically, massive-scale agent-based modeling required heavy C++/CUDA frameworks like FLAME GPU 2, locking researchers into specific proprietary hardware (NVIDIA GPUs) and demanding complex environment setups. 
 
----
-
-## Prerequisites
-- Node.js 20+
-- Python 3.12+ (or `uv`)
-- An OpenAI or Anthropic API Key (for future LLM inference)
+`abm.gl` represents a **democratization leap forward** for scientific computing:
+- **Zero-Friction Deployment:** No C++ compilers, no CUDA toolkits, no Python backend required. Just click a URL and enter the simulation.
+- **Device Agnostic:** Runs on Apple Silicon (M-series Macs), AMD, NVIDIA, and mobile devices natively. WebGPU translates seamlessly to Metal, DirectX 12, and Vulkan under the hood.
+- **Modern Ecosystem:** Seamlessly integrates with React, Next.js, and modern web visualization libraries (ChartGPU) for beautiful, declarative command center UI overlays.
 
 ---
 
-## Getting Started
+## Quick Start
 
-### 1. The Macro Engine (Backend)
-
-The backend handles all WebSocket broadcasting and LLM inference.
+You can run the entire 500,000+ agent simulation locally without a single backend dependency.
 
 ```bash
-cd backend
-python -m venv venv
+git clone https://github.com/kai-erlenbusch/abm.gl
+cd abm.gl/frontend
 
-# On Windows
-.\venv\Scripts\activate
-# On Mac/Linux
-source venv/bin/activate
-
-pip install fastapi uvicorn websockets pydantic litellm python-dotenv
-uvicorn server:app --reload
-```
-
-### 2. The Micro Engine (Frontend)
-
-The frontend handles all WebGPU rendering and compute physics.
-
-```bash
-cd frontend
 npm install
 npm run dev
 ```
-Open [http://localhost:3000](http://localhost:3000).
+
+Open [http://localhost:3000](http://localhost:3000) and click the **SETUP** button. 
 
 ---
 
-## Phase 2: Lockstep Time & LiteLLM Bridge (Complete)
-Phase 2 successfully replaced mock loops with actual WebGPU compute physics and real LLM inference. 
-- **WebGPURenderer Injection** enabled TSL natively in React Three Fiber.
-- **LiteLLM Structured Outputs** enforced the strict Pydantic JSON schema at the LLM level.
-- CPU/JS readback aggregated 10,000 instances instantaneously.
+## Architectural Breakdown (Under the Hood)
 
----
+### 1. The Death of $O(N^2)$ (Spatial Hashing)
+The core challenge in ABMs is collision detection. If 500,000 agents check every other agent, that's 250 billion checks per frame. `abm.gl` bypasses this by utilizing a **4-Pass Radix Sort directly in the GPU**. 
+1. The 50x50 world is divided into a 100x100 grid (10,000 cells).
+2. A TSL Compute Shader calculates a **Prefix Sum (Blelloch Scan)** to sort agents into memory buffers based on their spatial grid index.
+3. Agents only query neighbors within their immediate adjacent memory blocks, capping checks at a strict hardware-safe threshold (Volume Exclusion).
 
-## Architecture (Code Explanation)
+### 2. Eliminating Warp Divergence
+On a GPU, threads execute in "warps" (groups of 32). If threads in a warp loop over wildly different spatial densities, they diverge, causing massive performance loss.
+`abm.gl` solves this by assigning GPU threads based on the agents' *spatially sorted memory index*. Because the 32 threads in a warp are physically adjacent in the simulation, they experience identical local density, eliminating warp divergence and preventing GPU crashes during "dense singularity" clustering events.
 
-### Phase 3: WebGPU Atomic Aggregation (Complete)
-As we scale the simulation to **1,000,000 agents**, pulling 1 million floats (velocities) from VRAM to system RAM every 5 seconds creates a catastrophic bottleneck. 
+### 3. The Epidemic Engine (SIR Model)
+To prove the framework's capability, `abm.gl` implements a full "Susceptible-Infected-Recovered" (SIR) epidemiological model entirely inside the GPU Compute pipeline.
+- **Thread-Local Transmission**: Healthy agents detect Infected neighbors via the spatial hash and roll against a `transmission_probability` scalar.
+- **Dedicated GPU Timers**: A `Float32Array` buffer tracks the elapsed time of infection. Agents transition to Immune natively when the threshold is hit.
+- **Instant Visual State**: React Three Fiber reads the state buffer via TSL `select` nodes to instantaneously render agents as Green (Susceptible), Red (Infected), or Blue (Recovered).
 
-Phase 3 introduces **WebGPU Atomic Aggregation** to execute the statistical reduction natively on the GPU compute pipeline. Instead of passing 1,000,000 numbers to the CPU, we pass exactly **1 integer**.
+### 4. Telemetry via GPU Atomic Aggregation
+Streaming the exact state of 500,000 agents to the CPU every frame would cripple the main thread. Instead, `abm.gl` executes statistical reduction directly on the GPU.
 
 ```mermaid
 sequenceDiagram
     participant WebGPU Physics
     participant WebGPU Atomics
     participant CPU (JS)
-    participant Backend (Python)
+    participant Dashboard Chart
     
-    Note over WebGPU Physics: 1,000,000 Agents Moving
+    Note over WebGPU Physics: 500,000 Agents Moving
     WebGPU Atomics->>WebGPU Atomics: Reset Pass (Write 0 to buffer)
     loop Every Agent (Parallel)
-        WebGPU Physics->>WebGPU Atomics: atomicAdd( speed * 100.0 )
+        WebGPU Physics->>WebGPU Atomics: atomicAdd( Healthy/Infected/Recovered )
     end
-    Note over WebGPU Atomics: Buffer now holds 1 Uint32 sum
-    WebGPU Atomics->>CPU (JS): getArrayBufferAsync (Read 1 Uint32)
-    Note over CPU (JS): Divide by 100.0, divide by 1M
-    CPU (JS)->>Backend (Python): WebSocket Payload (Avg Speed)
+    Note over WebGPU Atomics: Buffer holds discrete population counts
+    WebGPU Atomics->>CPU (JS): getArrayBufferAsync (Read tiny Uint32 buffer)
+    CPU (JS)->>Dashboard Chart: CustomEvent('abm-telemetry')
 ```
 
-**How it works in code:**
-To circumvent WebGPU's lack of support for float atomics, we utilize a fixed-point math workaround. In the `aggregateStats` TSL compute node, we multiply the float speed by `100.0` to preserve 2 decimal places, cast it to a `uint`, and use `atomicAdd()` on a single 1-element `StorageInstancedBufferAttribute`. The multiplier of 100 (instead of 1000) prevents a 32-bit integer overflow (max ~4.29 billion) for high-speed agents, providing safe mathematical headroom. The JS CPU then effortlessly reads back the single `Uint32` to finalize the math.
+### 5. Next.js Command Center
+The React frontend completely wraps the simulation in an interactive HUD.
+- **Declarative Sliders**: Zustand variables inject directly into WebGPU `uniform` nodes, allowing researchers to tweak Infection Radius or Transmission Probability live at 60 FPS without re-allocating buffers.
+- **Zero-Render Heatmaps**: The 10x10 Spatial Density Grid relies on raw DOM mutation via `ref` attachments, avoiding React GC spikes and re-render lag while providing a 10Hz heatmap of the viral spread.
+- **ChartGPU**: Native WebGL line charts track the live total counts of the SIR populations seamlessly.
 
 ---
 
-## Phase 4: Next.js Command Center (ChartGPU) (Complete)
-Phase 4 introduced a modern, high-performance UI overlay for real-time telemetry streaming and lockstep control.
-- **Glassmorphism HUD**: A sleek Next.js `DashboardOverlay` built with Tailwind CSS.
-- **ChartGPU Integration**: A native WebGPU charting engine that plots real-time agent speed vs LLM policy speed at 60fps, entirely bypassing React state for maximum performance.
-- **Lockstep Controls**: A Pause/Resume button that halts the WebGPU compute physics simulation independently of the React lifecycle.
+## Project Structure
+- `frontend/src/app/page.tsx`: The primary execution loop and React overlay entry point.
+- `frontend/src/components/TslPrimitives.ts`: The raw WebGPU compute shaders (flocking behavior, epidemic spread, atomic aggregations) built using Three.js node primitives.
+- `frontend/src/engine/SpatialGrid.ts`: The complex parallel prefix-sum arrays and radix sorting algorithms responsible for spatial acceleration.
+- `frontend/src/components/DashboardOverlay.tsx`: The UI command center handling the WebGL telemetry charts.
 
 ---
 
-## Phase 5: WebGPU Spatial Awareness (Complete)
-To provide the LLM with actual geospatial context (rather than a blind global average), Phase 5 upgraded the architecture to support spatial patches:
-- **Spatial Grid**: The 1-element WebGPU aggregate buffer was expanded into a 10x10 spatial grid (100 sectors).
-- **Atomic Grouping**: As agents drift through the continuous 50x50 world, the Compute Shader maps their coordinates to discrete grid cells, utilizing `atomicAdd` to accumulate speed and agent density per sector without breaking parallel performance.
-- **LLM Geospatial Context**: The Python backend deserializes this 2D matrix, identifying local hotspots and anomalous density, allowing Shachi to issue targeted policy interventions instead of just global rules.
-
----
-
-## Architecture Hardening: Production Polish (Complete)
-Following the Phase 5 prototype, the simulation underwent a massive architectural overhaul to support production-level scaling and $O(N^2)$ collision logic:
-- **Lockstep Physics**: Disconnected the WebGPU physics loop from the LLM inference latency. However, for scientific reproducibility, the physics simulation is intentionally paused (lockstep) while the Shachi backend thinks asynchronously, ensuring deterministic state progression.
-- **Multi-Tenant Backend**: The FastAPI backend was refactored from a global singleton into a session-scoped WebSocket architecture, allowing multiple users to connect and run independent physical swarms simultaneously.
-- **Integer Overflow Protection**: The TSL precision multiplier was dropped to mathematically eliminate the risk of a 32-bit uint overflow during extreme agent clustering.
-- **100x100 Physics Grid**: The LLM Telemetry Grid (10x10) was decoupled from the WebGPU Collision Grid (100x100). By expanding to 10,000 cells, the $O(N^2)$ collision loop is kept extremely tight, completely eliminating the GPU Timeout Detection and Recovery (TDR) crash risk at the 1,000,000 scale.
-- **GPU Spatial Hash Grid**: Replaced $O(N^2)$ collision math with a 4-Pass Radix Sort directly in Three.js TSL. A single-thread Compute Shader calculates a Prefix Sum, allowing 1,000,000 agents to map into a dense sorted array and calculate localized separation forces natively on the GPU.
-- **Spatial Heterogeneity (Field Maps)**: Replaced the global scalar `policy_speed` with a 10x10 float array. The frontend uses a Three.js `DataTexture` with Bilinear Interpolation, enabling smooth, seamless gradients between high-speed highways and low-speed quarantine zones based on LLM output.
-
----
-
-## Security Upgrades (Complete)
-- **Denial of Wallet Protection (WebSocket Auth)**: Implemented a shared token handshake across the WebSocket layer to secure the FastAPI backend from unauthenticated API consumption, keeping the LLM endpoints safe while maintaining a seamless local developer experience.
-
----
-
-## GPU Performance Upgrades (Complete)
-- **Parallel Blelloch Scan**: Replaced the $O(N)$ single-threaded prefix sum with a 3-pass Chunked Parallel Blelloch Scan in TSL. Utilizes `workgroupArray` shared memory and `workgroupBarrier()` to achieve work-efficient $O(N)$ compute with $O(\log N)$ step depth, completely unblocking the 1,000,000 agent scale.
-- **Atomic Contention Mitigation**: Solved the L2 cache atomic bottleneck when agents flock densely. Implemented a Workgroup-Local Bitonic Sort and Run-Length Batching strategy using `workgroupArray`. By locally sorting agents in shared memory, we successfully batched contiguous runs and reduced 256 global atomic operations down to a single global atomic per workgroup.
-- **Dynamic Collision Loop Sizing**: Replaced the statically hardcoded 64-iteration neighbor loop with dynamic search radius loop bounds and the native TSL `Loop` primitive. This instantly speeds up sparse cells while enforcing a hard 1024-neighbor cap to strictly preserve GPU TDR safety during dense singularities.
-- **Robust PRNG (PCG Hash)**: Replaced flawed sine-wave based pseudo-randomness with a GPU-optimized PCG Hash function. This successfully solved strange macroscopic grid artifacts (vertical/horizontal flocking alignment) and eliminated float32 precision loss across 1,000,000+ parallel threads.
-
----
-
-## Phase 6: Multivariate Density Heatmap UI (Complete)
-Phase 6 visualizes the "dark data" generated by the spatial grid by rendering a real-time 10x10 heatmap overlay on the Next.js Dashboard. By mapping the grid directly to raw DOM nodes, the heatmap updates at 10Hz with zero React re-renders, preventing garbage collection spikes. 
-- **Multivariate Blending**: Rather than simple red density, the heatmap dynamically interpolates exact RGB values based on the cell's underlying demographic state (Green = Susceptible, Red = Infected, Blue = Recovered). As epidemics sweep through neighborhoods, the visual quadrant dynamically shifts through gradients of Orange, Purple, and Teal.
-
----
-
-## Phase 7: SIR Epidemic Model (Complete)
-Phase 7 transforms the particle system into a true Agent-Based Model by implementing a classic "Susceptible-Infected-Recovered" (SIR) epidemic spread.
-- **Infection State Vector**: A discrete `Uint32Array` tracks the health of all 1,000,000 agents. Patient Zeros are dynamically seeded during the Setup phase.
-- **Thread-Local Transmission**: During the WebGPU $O(N^2)$ spatial collision pass, Healthy threads that detect proximity to an Infected neighbor check against a global `transmission_probability` scalar to determine if they become infected.
-- **Timer Nodes (Recovery)**: A dedicated `Float32Array` tracks physical time elapsed since infection, managed entirely in the Compute Shader. Upon hitting the `recovery_time` threshold, agents transition to State 2 (Immune) and no longer transmit the virus.
-- **Visual Feedback**: The React Three Fiber `pointsMaterial` utilizes TSL `select` nodes to instantaneously render states: Susceptible (Green), Infected (Red), and Recovered (Blue).
-- **Macro-Level Lockdowns**: The GPU aggregates spatial infection and recovery counts, streaming them to the Python backend. The LLM Mayor detects outbreak hotspots and enforces localized quarantines by dropping the target speed to `0.0`.
-
----
-
-## Phase 8: Adaptive NetLogo UI & Ground Zero (Complete)
-Phase 8 transforms the hardcoded Next.js overlay into a generalized, dynamic Agent-Based Modeling platform mimicking the classic NetLogo UI.
-- **JSON Declarative UI**: A central `modelSchema.json` completely dictates the left-hand sidebar, mapping configuration (sliders, buttons, text fields) directly to a dynamic React renderer.
-- **Zustand-to-WebGPU Pipeline**: TSL `uniform` nodes are bound directly to Zustand store state, allowing React UI sliders to interactively manipulate the 1,000,000-agent GPU compute physics with zero performance overhead.
-- **Setup & Ground Zero**: The classic ABM "Setup" button is wired to a dedicated WebGPU compute pass that resets positions and intelligently seeds a centralized "Ground Zero" viral cluster, allowing researchers to watch the macro spread dynamically.
-- **Dynamic WebGPU Allocation**: The Agent Count is fully decoupled from static constants. Modifying the `agent_count` text field gracefully unmounts the simulation and dynamically re-allocates all `StorageInstancedBufferAttribute` memory arrays instantly, allowing safe scaling from 1 to 1,000,000 agents directly from the UI.
-
----
-
-## Phase 9: Multi-Agent Policy Network (Complete)
-Phase 9 expanded the Python backend from a single `Shachi` Mayor into a distributed multi-agent network architecture (Advisors vs. Governors). Instead of one LLM making all decisions, we implemented a concurrent multi-agent graph:
-
-- **Level 1 (The Advisors)**: Independent LLMs running concurrently (`asyncio.gather`).
-  - **Public Health Advisor**: Analyzes the grid to find maximum density hotspots and recommends targeted quarantine zones (low speeds) to prevent virus spread.
-  - **Chief Economist Advisor**: Analyzes the grid to maintain high throughput and flow, recommending high-speed highways to maximize economic activity.
-- **Level 2 (The Governor/Synthesizer)**:
-  - **The Mayor (Governor)**: Receives the raw 10x10 grid stats AND the written reports/proposals from both the Health Advisor and the Economist Advisor. The Mayor synthesizes these competing priorities into the final 10x10 `policy_speed_map`.
-
-This introduces complex social dynamics and competing priorities into the physical simulation, elevating it from a fluid particle system into a true Complex Adaptive System.
-
----
-
-## Phase 10: Performance Tuning & React StrictMode Resiliency (Complete)
-Phase 10 focuses on resolving scaling limits and lifecycle bugs when pushing the simulation to its absolute breaking point (500k-1M agents).
-- **Uniform Strided Sampling**: In the WebGPU compute nodes, enforced a strict $O(8)$ uniform stride for spatial density checks. This mathematically guarantees the GPU ALUs never exceed 72 neighbor collision checks per agent per frame. During extreme singularity collapses, this strict cap preserves perfect fluid physics and viral transmission while successfully holding a stable **30 FPS at 500,000 agents**.
-- **React StrictMode Resiliency**: Hardened the WebGPU `ChartGPU` engine against React 18's double-mount lifecycle by explicitly tying `.dispose()` to the `useEffect` unmount phase, entirely preventing zombie DOM canvas elements and WebGL context memory leaks.
-- **Asynchronous Telemetry Dispatch**: Disconnected the `ChartGPU` high-frequency metric rendering from the React DOM tree entirely. Telemetry is natively streamed at 60Hz via DOM CustomEvents (`abm-telemetry`) and injected straight into the WebGL texture using `appendData()`, dropping main-thread CPU overhead to near-zero.
-- **Lazy Telemetry Aggregation**: Decoupled the global `atomicAdd` calls from the 60FPS physics loop. By moving the spatial density accumulation into a standalone `telemetryAggregateNode` and only executing it synchronously before a JavaScript readback (e.g., 2-10Hz), we eliminated massive memory contention where 2,000,000 parallel threads were attempting to write to 400 shared grid indices every frame. This successfully unblocked the hardware ALUs and stabilized the frame rate for 500,000+ agents.
-- **Bitonic Sort & Sync Overhead Removal**: Successfully broke through the GPU synchronization bottleneck by stripping out a redundant block-level Bitonic Sort and 36 `workgroupBarrier()` calls inside the spatial hashing count pass. By replacing this massive complexity with a single direct `atomicAdd`, we unlocked unprecedented memory bandwidth, officially pushing the WebGPU compute engine to benchmark **1,000,000 autonomous agents at 16 FPS** within a standard Chrome browser.
-
----
-
-## Phase 11: Scientific Computing & True Spatial Sorting (Complete)
-Phase 11 pivoted the architecture away from "video game" performance optimizations toward true scientific ABM fidelity, ensuring mathematical exactness under high-density scenarios.
-- **Warp Divergence Elimination**: Replaced indirect global memory fetching with a unified spatially-sorted thread index mapping. By assigning GPU threads to agents based on their spatial sorting in the 100x100 grid (via the Blelloch Scan), all 32 threads in a Warp process identical spatial densities. This completely eliminates Warp Divergence and thread idling during dense singularity events.
-- **Perfect Memory Coalescing & Volume Exclusion**: Stripped out arbitrary UI performance sliders (Strided Sampling) that caused uncoalesced memory leaps. Replaced them with perfectly linear contiguous memory reads inside the collision node, capped only by a strict "Volume Exclusion" limit (1024 checks). This enforces the physical laws of maximum mass per 0.5m grid cell, safeguarding the OS WebGPU Watchdog Timer from crashing while preserving scientific reproducibility.
+*This project was an exploratory exercise to push the limits of WebGPU in the browser. It proves that the web is officially ready for high-fidelity scientific computing without the friction of legacy infrastructure.*
