@@ -173,8 +173,8 @@ export const spatialCollisionNode = Fn(([velocities, velocities_next, infectionB
                                         const rand = prngHash(contactSeed);
                                         
                                         If(rand.lessThan(transmissionProb), () => {
-                                            infectionBuffer.element(realAgentId).assign(uint(1));
-                                            timerBuffer.element(realAgentId).assign(recoveryTime);
+                                            myInfection.assign(uint(1));
+                                            myTimer.assign(recoveryTime);
                                         });
                                     });
                                 });
