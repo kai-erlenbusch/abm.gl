@@ -342,6 +342,14 @@ export default function DashboardOverlay() {
               return null;
             })}
           </div>
+          <div className="flex space-x-2 mb-4">
+            <button 
+              onClick={() => window.dispatchEvent(new CustomEvent('abm-diagnostic-step'))}
+              className="flex-1 py-2 rounded-lg text-xs font-bold transition-colors bg-purple-500/20 text-purple-400 hover:bg-purple-500/30 border border-purple-500/30"
+            >
+              🛠 DIAGNOSTIC STEP
+            </button>
+          </div>
           <div className="space-y-2">
             {modelSchema.controls.filter((c: any) => c.type === 'slider' || c.type === 'number').map((c: any) => {
               if (c.type === 'slider') return <SliderWidget key={c.id} control={c} />;

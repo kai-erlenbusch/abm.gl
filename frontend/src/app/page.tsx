@@ -149,6 +149,16 @@ export default function Home() {
   const aggregateDataRef = useRef(new Uint32Array(400));
   const gridRef = useRef(Array.from({ length: 10 }, () => Array.from({ length: 10 }, () => ({ density: 0, average_speed: 0, infected_count: 0, recovered_count: 0 }))));
   const lastFrameDuration = useRef(16);
+  const diagnosticStepPendingRef = useRef(false);
+
+  useEffect(() => {
+      const handleDiag = () => {
+          diagnosticStepPendingRef.current = true;
+          useSimulationStore.getState().setIsPaused(true);
+      };
+      window.addEventListener('abm-diagnostic-step', handleDiag);
+      return () => window.removeEventListener('abm-diagnostic-step', handleDiag);
+  }, []);
 
   const renderCallback = async (gl: any, delta: number) => {
     deltaUniform.value = delta;
@@ -157,7 +167,66 @@ export default function Home() {
     // Throttle telemetry dynamically
     const readbackInterval = lastFrameDuration.current > 33 ? 500 : 100;
     
-    if (frameStart - lastReadbackRef.current > readbackInterval && !readbackPendingRef.current) {
+    if (diagnosticStepPendingRef.current) {
+        diagnosticStepPendingRef.current = false;
+        console.log("=== EXECUTING MATHEMATICAL DIAGNOSTIC STEP ===");
+        
+        try {
+            // Read BEFORE state
+            const posBufferBefore = await gl.backend.getArrayBufferAsync(store.attributes['position']);
+            const velBufferBefore = await gl.backend.getArrayBufferAsync(store.attributes['velocity']);
+            const infBufferBefore = await gl.backend.getArrayBufferAsync(store.attributes['infection']);
+            
+            const posA = new Float32Array(posBufferBefore);
+            const velA = new Float32Array(velBufferBefore);
+            const infA = new Uint32Array(infBufferBefore);
+            
+            // Execute ONE frame explicitly
+            for (const pass of passes) {
+                 if (pass) gl.compute(pass);
+            }
+            
+            // Read AFTER state (from _next buffers)
+            const posBufferAfter = await gl.backend.getArrayBufferAsync(store.attributes['position_next']);
+            const velBufferAfter = await gl.backend.getArrayBufferAsync(store.attributes['velocity_next']);
+            const infBufferAfter = await gl.backend.getArrayBufferAsync(store.attributes['infection_next']);
+            
+            const posB = new Float32Array(posBufferAfter);
+            const velB = new Float32Array(velBufferAfter);
+            const infB = new Uint32Array(infBufferAfter);
+            
+            // Read Copied state (from Primary buffers to ensure copyPass worked)
+            const posBufferCopied = await gl.backend.getArrayBufferAsync(store.attributes['position']);
+            
+            const posC = new Float32Array(posBufferCopied);
+            
+            const diagnosticData = [];
+            for (let i = 0; i < 10; i++) {
+                diagnosticData.push({
+                    AgentID: i,
+                    PosX_Before: posA[i*2].toFixed(4),
+                    PosY_Before: posA[i*2+1].toFixed(4),
+                    VelX_Before: velA[i*2].toFixed(4),
+                    VelY_Before: velA[i*2+1].toFixed(4),
+                    Inf_Before: infA[i],
+                    
+                    PosX_Next: posB[i*2].toFixed(4),
+                    PosY_Next: posB[i*2+1].toFixed(4),
+                    VelX_Next: velB[i*2].toFixed(4),
+                    VelY_Next: velB[i*2+1].toFixed(4),
+                    Inf_Next: infB[i],
+                    
+                    PosX_Copied: posC[i*2].toFixed(4),
+                    PosY_Copied: posC[i*2+1].toFixed(4)
+                });
+            }
+            console.table(diagnosticData);
+            console.log("=== DIAGNOSTIC COMPLETE ===");
+            
+        } catch (e) {
+            console.error("Diagnostic Readback Error:", e);
+        }
+    } else if (frameStart - lastReadbackRef.current > readbackInterval && !readbackPendingRef.current) {
         lastReadbackRef.current = frameStart;
         readbackPendingRef.current = true;
         
